@@ -17,12 +17,17 @@ from . import tables
 from .transport import DeviceTransport
 from .wire import (
     Reader,
+    WireError,
     build,
     password_auth,
     u16,
     u32,
 )
 from .tables import decode_nv_attributes
+
+class DeviceError(RuntimeError):
+    """A TPM command failed, or a read was refused as unsafe."""
+
 
 EK_CERT_INDICES = {
     0x01C00002: "RSA endorsement key certificate",
@@ -87,7 +92,7 @@ class NvPublic:
 def nv_read_public(t: DeviceTransport, index: int) -> NvPublic:
     resp = t.transceive(build(tables.CC_NV_READ_PUBLIC, u32(index)))
     if not resp.ok:
-        raise RuntimeError(f"NV_ReadPublic(0x{index:08X}) failed: {resp.describe()}")
+        raise DeviceError(f"NV_ReadPublic(0x{index:08X}) failed: {resp.describe()}")
     rd = Reader(resp.params, label="NV_ReadPublic")
     inner = Reader(rd.tpm2b(), label="TPMS_NV_PUBLIC")
     public = NvPublic(
@@ -111,12 +116,54 @@ def nv_read(t: DeviceTransport, index: int, size: int, offset: int = 0,
               auth_area=password_auth())
     )
     if not resp.ok:
-        raise RuntimeError(f"NV_Read(0x{index:08X}) failed: {resp.describe()}")
+        raise DeviceError(f"NV_Read(0x{index:08X}) failed: {resp.describe()}")
     return Reader(resp.params, label="NV_Read").tpm2b()
 
 
-def nv_dump(t: DeviceTransport, index: int, chunk: int = 0x400) -> bytes:
+NV_ATTR_NO_DA = 0x02000000
+
+# Used when TPM_PT_NV_BUFFER_MAX cannot be read; small enough for any TPM.
+NV_FALLBACK_CHUNK = 64
+
+
+def nv_read_hazard(public: NvPublic) -> str | None:
+    """Why an empty-password NV_Read of this index could change TPM state.
+
+    On an index without TPMA_NV_NO_DA a failed authorization increments the
+    dictionary-attack failure counter, and enough of them lock the TPM out.
+    The index auth value is not readable, so the only safe answer is to
+    refuse unless the caller accepts that risk.
+    """
+    if public.attributes & NV_ATTR_NO_DA:
+        return None
+    return (
+        f"NV index 0x{public.index:08X} is not NO_DA: if its auth value is "
+        "not empty, an empty-password NV_Read increments the dictionary-"
+        "attack lockout counter"
+    )
+
+
+def nv_buffer_max(t: DeviceTransport) -> int:
+    """TPM_PT_NV_BUFFER_MAX, the largest size one NV_Read may ask for."""
+    from .caps import CapabilityError, _get
+    try:
+        data, _ = _get(t, tables.CAP_TPM_PROPERTIES, 0x12C, 1)
+        rd = Reader(data, label="TPML_TAGGED_TPM_PROPERTY")
+        if rd.u32() and rd.u32() == 0x12C:
+            return rd.u32() or NV_FALLBACK_CHUNK
+    except (CapabilityError, WireError):
+        pass
+    return NV_FALLBACK_CHUNK
+
+
+def nv_dump(t: DeviceTransport, index: int, chunk: int | None = None,
+            allow_da: bool = False) -> bytes:
     public = nv_read_public(t, index)
+    hazard = nv_read_hazard(public)
+    if hazard and not allow_da:
+        raise DeviceError(f"refusing to read: {hazard} (pass --allow-da to override)")
+    if chunk is None:
+        chunk = nv_buffer_max(t)
     out = bytearray()
     offset = 0
     while offset < public.data_size:
@@ -139,37 +186,74 @@ def _handles(t: DeviceTransport, handle_type: int) -> list[int]:
 # PCR
 # --------------------------------------------------------------------------
 
+def _pcr_selection(wanted: dict[int, set[int]]) -> bytes:
+    selection = u32(len(wanted))
+    for alg, indices in wanted.items():
+        select = bytearray(3)
+        for index in indices:
+            select[index // 8] |= 1 << (index % 8)
+        selection += u16(alg) + bytes([len(select)]) + bytes(select)
+    return selection
+
+
 def pcr_read(t: DeviceTransport, algs: list[int], indices: list[int]) -> dict:
-    select = bytearray(3)
+    """Read PCRs, repeating PCR_Read until every selected PCR is returned.
+
+    One PCR_Read returns at most eight digests, in pcrSelectionOut order, so
+    each digest is labelled from the returned selection rather than assumed.
+    PCRs the TPM never returns (an unallocated bank, say) are listed in
+    ``missing``.  ``counter_changed`` flags a PCR update between calls.
+    """
     for index in indices:
         if not 0 <= index < 24:
             raise ValueError(f"PCR index out of range: {index}")
-        select[index // 8] |= 1 << (index % 8)
-    selection = u32(len(algs))
-    for alg in algs:
-        selection += u16(alg) + bytes([len(select)]) + bytes(select)
-
-    resp = t.transceive(build(tables.CC_PCR_READ, selection))
-    if not resp.ok:
-        raise RuntimeError(f"PCR_Read failed: {resp.describe()}")
-    rd = Reader(resp.params, label="PCR_Read")
-    counter = rd.u32()
-
-    applied = []
-    for _ in range(rd.u32()):
-        alg = rd.u16()
-        size = rd.u8()
-        applied.append({"alg": alg, "bitmap": rd.take(size).hex()})
-
-    digests = []
-    for _ in range(rd.u32()):
-        digests.append(rd.tpm2b())
-
-    return {"counter": counter, "applied": applied, "digests": digests}
+    wanted = {alg: set(indices) for alg in algs}
+    pcrs: list[dict] = []
+    counters: list[int] = []
+    for _ in range(32):  # bounded: 8 digests per call
+        pending = {alg: s for alg, s in wanted.items() if s}
+        if not pending:
+            break
+        resp = t.transceive(build(tables.CC_PCR_READ, _pcr_selection(pending)))
+        if not resp.ok:
+            raise DeviceError(f"PCR_Read failed: {resp.describe()}")
+        rd = Reader(resp.params, label="PCR_Read")
+        counters.append(rd.u32())
+        returned: list[tuple[int, int]] = []
+        for _ in range(rd.u32()):
+            alg = rd.u16()
+            bitmap = rd.take(rd.u8())
+            returned.extend(
+                (alg, byte_index * 8 + bit)
+                for byte_index, byte in enumerate(bitmap)
+                for bit in range(8)
+                if byte & (1 << bit)
+            )
+        digests = [rd.tpm2b() for _ in range(rd.u32())]
+        if len(digests) != len(returned):
+            raise DeviceError(
+                f"PCR_Read returned {len(digests)} digests for "
+                f"{len(returned)} selected PCRs"
+            )
+        if not returned:
+            break
+        for (alg, index), digest in zip(returned, digests):
+            pcrs.append({"alg": alg, "pcr": index, "digest": digest})
+            wanted.get(alg, set()).discard(index)
+    return {
+        "counter": counters[0] if counters else None,
+        "counter_changed": len(set(counters)) > 1,
+        "pcrs": pcrs,
+        "digests": [entry["digest"] for entry in pcrs],
+        "missing": {alg: sorted(s) for alg, s in wanted.items() if s},
+    }
 
 
 def parse_event_log(data: bytes) -> list[dict]:
     """Parse a TCG2 (crypto-agile) or legacy SHA1 event log.
+
+    The log is written by UEFI firmware, so every integer in it is
+    little-endian (unlike the TPM command stream).
 
     Unknown layouts stop the parse with an explicit `truncated` marker rather
     than silently dropping events.
@@ -181,11 +265,11 @@ def parse_event_log(data: bytes) -> list[dict]:
         if len(data) - offset < 12:
             events.append({"offset": start, "error": "trailing bytes", "raw_hex": data[offset:].hex()})
             break
-        pcr_index = int.from_bytes(data[offset:offset + 4], "big")
-        event_type = int.from_bytes(data[offset + 4:offset + 8], "big")
+        pcr_index = int.from_bytes(data[offset:offset + 4], "little")
+        event_type = int.from_bytes(data[offset + 4:offset + 8], "little")
         offset += 8
         digests: list[dict] = []
-        declared = int.from_bytes(data[offset:offset + 4], "big")
+        declared = int.from_bytes(data[offset:offset + 4], "little")
         agile = False
         if 1 <= declared <= 4:
             probe = offset + 4
@@ -195,7 +279,7 @@ def parse_event_log(data: bytes) -> list[dict]:
                 if probe + 2 > len(data):
                     valid = False
                     break
-                alg = int.from_bytes(data[probe:probe + 2], "big")
+                alg = int.from_bytes(data[probe:probe + 2], "little")
                 length = tables.DIGEST_LEN.get(alg)
                 if length is None or probe + 2 + length > len(data):
                     valid = False
@@ -215,7 +299,7 @@ def parse_event_log(data: bytes) -> list[dict]:
             digests = [{"alg": 0x04, "digest": data[offset:offset + 20]}]
             offset += 20
 
-        event_size = int.from_bytes(data[offset:offset + 4], "big")
+        event_size = int.from_bytes(data[offset:offset + 4], "little")
         offset += 4
         event_data = data[offset:offset + event_size]
         offset += event_size
@@ -295,6 +379,7 @@ class Certificate:
 
 
 def read_ek_certificate(t: DeviceTransport, index: int) -> Certificate:
+    # EK certificate indices are NO_DA by profile; nv_dump still checks.
     der = nv_dump(t, index)
     cert = Certificate(index=index, der=der)
     openssl = shutil.which("openssl")
@@ -335,7 +420,7 @@ def read_all_ek_certificates(t: DeviceTransport) -> list[Certificate]:
     for index in EK_CERT_INDICES:
         try:
             certs.append(read_ek_certificate(t, index))
-        except RuntimeError as exc:
+        except (DeviceError, WireError) as exc:
             cert = Certificate(index=index, der=b"", note=str(exc))
             certs.append(cert)
     return certs

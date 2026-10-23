@@ -44,6 +44,13 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(len(parsed), 1)
         self.assertTrue(any("trailing" in p for p in problems))
 
+    def test_error_response_overlapping_a_command_code(self):
+        # 0x14C is both GetTime and TPM_RC_NV_DEFINED
+        stream = command(0x12A, b"\x00" * 4) + response(0x14C)
+        parsed, _ = frames.split_frames(stream)
+        self.assertEqual([f.role for f in parsed], ["command", "response"])
+        self.assertEqual(parsed[1].to_dict()["rc_name"], "NV_DEFINED")
+
     def test_forced_role(self):
         parsed, _ = frames.split_frames(response(), role="command")
         self.assertEqual(parsed[0].role, "command")
@@ -59,6 +66,13 @@ class HexInputTests(unittest.TestCase):
 
     def test_bare_hex_lines(self):
         self.assertEqual(frames.parse_hexdump_text("8001 0000").hex(), "80010000")
+
+    def test_xxd_ascii_column_that_looks_like_hex(self):
+        text = "00000000: 8001 0000 000a  dead\n"
+        self.assertEqual(frames.parse_hexdump_text(text).hex(), "80010000000a")
+
+    def test_odd_prefixed_line_does_not_raise(self):
+        self.assertEqual(frames.parse_hexdump_text("0x801").hex(), "0801")
 
     def test_xxd_with_ascii_column(self):
         text = "00000000: 8001 0000 000a 0000 0180  ........\n"
@@ -88,6 +102,32 @@ class StraceInputTests(unittest.TestCase):
         trace = '1  read(3, "\\x80\\x01", 10) = -1 EIO (Input/output error)\n'
         data, _ = frames.parse_strace(trace)
         self.assertEqual(data, b"")
+
+    def test_direction_sets_role(self):
+        trace = (
+            '1  write(3, "\\x80\\x01\\x00\\x00\\x00\\x0e\\x00\\x00\\x01\\x2a'
+            '\\x00\\x00\\x00\\x00", 14) = 14\n'
+            '1  read(3, "\\x80\\x01\\x00\\x00\\x00\\x0a\\x00\\x00\\x01\\x4c", 4096) = 10\n'
+        )
+        segments, _ = frames.parse_strace_segments(trace)
+        self.assertEqual([d for d, _ in segments], ["write", "read"])
+        parsed, problems, total = frames.split_strace_frames(segments)
+        self.assertEqual(problems, [])
+        self.assertEqual(total, 24)
+        self.assertEqual([f.role for f in parsed], ["command", "response"])
+        self.assertEqual(parsed[1].offset, 14)
+
+    def test_pid_prefix_and_resumed_read(self):
+        trace = (
+            '[pid  77] write(3, "\\x80\\x01\\x00\\x00\\x00\\x0a\\x00\\x00\\x01\\x7c", 10) = 10\n'
+            '[pid  77] read(3,  <unfinished ...>\n'
+            '[pid  78] write(5, "\\x00", 1) = 1\n'
+            '[pid  77] <... read resumed>"\\x80\\x01\\x00\\x00\\x00\\x0a\\x00\\x00\\x00\\x00", 4096) = 10\n'
+        )
+        segments, problems = frames.parse_strace_segments(trace, fd=3)
+        self.assertEqual(problems, [])
+        self.assertEqual([d for d, _ in segments], ["write", "read"])
+        self.assertEqual(segments[1][1][-4:], b"\x00\x00\x00\x00")
 
     def test_truncated_string_is_reported(self):
         trace = '1  write(3, "\\x80\\x01\\x00\\x00\\x00\\x0c\\x00...", 12) = 12\n'

@@ -55,6 +55,29 @@ class ScanTests(unittest.TestCase):
             self.assertTrue(written)
             self.assertTrue(any(path.read_bytes() for path in written))
 
+    def test_noisy_signature_does_not_hide_others(self):
+        data = b"MZ" * 200 + b"_FVH"
+        kinds = {hit["kind"] for hit in carve.find_container(data)}
+        self.assertIn("UEFI firmware volume", kinds)
+
+    def test_fmp_capsule_guid(self):
+        guid = bytes.fromhex("edd5cb6d2de8444cbda17194199ad92a")
+        kinds = {hit["kind"] for hit in carve.find_container(b"\x00" * 16 + guid)}
+        self.assertIn("UEFI FMP capsule", kinds)
+
+    def test_window_hash_matches_extracted_file(self):
+        import hashlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "bios.bin"
+            source.write_bytes(self.blob)
+            report = carve.scan_path(source, extract_dir=Path(tmp) / "out")[0]
+            hashes = {hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in (Path(tmp) / "out").glob("*.bin")}
+            for candidate in report["candidates"]:
+                self.assertIn(candidate["sha256_window"], hashes)
+
     def test_no_markers(self):
         report = carve.scan_bytes(b"\x00" * 4096)
         self.assertEqual(report["candidates"], [])

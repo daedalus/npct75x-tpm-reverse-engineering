@@ -70,8 +70,8 @@ across power cycles.
   reports that instead of guessing the start method.
 
 **Open**: firmware-update mode has **not** been entered and will not be
-entered without an explicit decision. The TIS interface vendor commands
-(`0x200..`) are the likely control path, but nothing is sent yet.
+entered without an explicit decision. The vendor commands
+(`0x20000200..`) are the likely control path, but nothing is sent yet.
 
 ---
 
@@ -145,15 +145,19 @@ bitmask-like but that is not evidence.
 ### 4.2 Vendor commands — **listed, not called**
 
 `TPM_PT_VENDOR_COMMANDS` says 9. `GET_CAPABILITY(TPM_CAP_COMMANDS)` lists
-exactly nine entries with the `TPMA_CC.V` bit set:
+exactly nine entries with the `TPMA_CC.V` bit set. Their `commandIndex`
+values (bits 15:0) are `0x200..0x216`; **Derived**: the command code on the
+wire carries the V bit (bit 29), so the codes are:
 
 ```
-0x00000200  0x00000201  0x00000202  0x00000203  0x00000204
-0x00000211  0x00000213  0x00000214  0x00000216
+0x20000200  0x20000201  0x20000202  0x20000203  0x20000204
+0x20000211  0x20000213  0x20000214  0x20000216
 ```
 
-They are outside the TPM 2.0 assigned range (`TPM_CC_FIRST = 0x11F`), so the
-toolkit prints them without a name. **Their semantics and side effects are
+Earlier versions of the toolkit dropped the V bit and printed
+`0x00000200..`; those bare values are not valid command codes. Vendor codes
+have no names in the TPM 2.0 tables, so the toolkit prints them as
+`VENDOR_0x2000xxxx`. **Their semantics and side effects are
 unknown; none have been sent.** Sending them is gated behind `--allow-write`
 and is out of scope until the vendor documentation or the firmware image
 explains them.
@@ -203,14 +207,19 @@ Minimal working `NV_Read` (35 bytes):
 
 ### 5.3 Other traps
 
-* `TPML_CCA` entries are 4-byte `TPMA_CC` values (cc in bits 0–15), not
-  8-byte `{cc, attrs}` pairs. Reading 8 bytes per entry fails on the first
+* `TPML_CCA` entries are 4-byte `TPMA_CC` values (`commandIndex` in bits
+  0–15, vendor flag `V` in bit 29), not 8-byte `{cc, attrs}` pairs. The
+  command code is `commandIndex | V << 29`. Reading 8 bytes per entry fails on the first
   page boundary with an "offset 260, have 0" error.
 * `GetCapability(TPM_CAP_ALGS)` can return `moreData = 1` when the requested
   count is exactly the number of returned entries. Use a large count and
   page if needed.
 * For `TPM_CAP_COMMANDS`, the property argument is the *starting command
   code*, so paging advances to `last_cc + 1`.
+* The ACPI `TPM2` table and the TCG event log are little-endian. Parsing
+  them big-endian turns start method `6` into `0x06000000`.
+* `PCR_Read` returns at most eight digests per call; label each digest
+  from the returned `pcrSelectionOut` and repeat for the rest.
 
 Cross-checks used during development:
 
@@ -232,7 +241,7 @@ is the working path for the vendor property space.
 ## 6. Open questions
 
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
-2. What do vendor commands `0x200..0x216` do? Which are read-only?
+2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
 3. Where does the TPM get its firmware? The working assumption is on-die
    flash in the NPCT75x package with no public read-back command, so the
    vendor BIOS/EC update is the practical source.

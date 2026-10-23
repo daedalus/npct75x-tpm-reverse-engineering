@@ -187,6 +187,7 @@ def cmd_raw(args) -> int:
         command = build(
             int(args.cc, 0),
             parse_hex(args.body) if args.body else b"",
+            handles=parse_hex(args.handles) if args.handles else b"",
         )
     cc = int.from_bytes(command[6:10], "big")
     if not args.allow_write and cc not in READ_ONLY_CC:
@@ -227,8 +228,15 @@ def cmd_pcrs(args) -> int:
     with DeviceTransport(args.tcti) as transport:
         result = device.pcr_read(transport, algs, indices)
     print(f"update counter: {result['counter']}")
-    for digest in result["digests"]:
-        print(f"  {digest.hex()}")
+    if result["counter_changed"]:
+        print("warning: PCRs changed between PCR_Read calls; values span "
+              "more than one update counter", file=sys.stderr)
+    for entry in result["pcrs"]:
+        name = tables.ALG_NAMES.get(entry["alg"], f"0x{entry['alg']:04X}")
+        print(f"  {name.lower()}[{entry['pcr']:2d}] {entry['digest'].hex()}")
+    for alg, missing in result["missing"].items():
+        name = tables.ALG_NAMES.get(alg, f"0x{alg:04X}")
+        print(f"  {name.lower()}: not returned by the TPM: {missing}")
     if args.eventlog:
         path = Path(args.eventlog)
         events = device.parse_event_log(path.read_bytes())
@@ -253,7 +261,7 @@ def cmd_nv(args) -> int:
         index = int(args.index, 0)
         public = device.nv_read_public(transport, index)
         print(json.dumps(public.to_dict(), indent=2))
-        data = device.nv_dump(transport, index)
+        data = device.nv_dump(transport, index, allow_da=args.allow_da)
         print(f"read {len(data)} bytes")
         if args.dump_dir:
             out = Path(args.dump_dir)
@@ -309,21 +317,29 @@ def cmd_acpi(args) -> int:
 def cmd_frames(args) -> int:
     if args.strace:
         text = Path(args.input).read_text(errors="replace")
-        data, problems = frames.parse_strace(text, fd=args.fd)
+        segments, problems = frames.parse_strace_segments(text, fd=args.fd)
+        if args.role == "auto":
+            # write = command, read = response: no guessing needed
+            parsed, split_problems, total = frames.split_strace_frames(segments)
+        else:
+            data = b"".join(chunk for _, chunk in segments)
+            parsed, split_problems = frames.split_frames(data, role=args.role)
+            total = len(data)
     else:
         data = frames.load_bytes(Path(args.input))
         problems = []
-    parsed, split_problems = frames.split_frames(data, role=args.role)
+        parsed, split_problems = frames.split_frames(data, role=args.role)
+        total = len(data)
     problems.extend(split_problems)
     if args.json:
         _json_print({
             "input": str(args.input),
-            "bytes": len(data),
+            "bytes": total,
             "frames": [frame.to_dict() for frame in parsed],
             "problems": problems,
         })
         return 0
-    print(f"{len(data)} bytes -> {len(parsed)} frames")
+    print(f"{total} bytes -> {len(parsed)} frames")
     for frame in parsed:
         info = frame.to_dict()
         if frame.role == "command":
@@ -367,15 +383,25 @@ def cmd_carve(args) -> int:
 
 
 def cmd_selftest(args) -> int:
-    """Round-trip checks that need no hardware."""
+    """Round-trip checks that need no hardware.
+
+    Explicit checks rather than ``assert``, which ``python -O`` removes.
+    """
     command = build(0x0000017A, u32(0x06) + u32(0x100) + u32(0x10))
-    assert command[:2] == b"\x80\x01"
-    assert int.from_bytes(command[2:6], "big") == len(command) == 22
     response = parse_response(bytes.fromhex("80010000000a00000000"))
-    assert response.ok and response.tag == 0x8001
-    assert decode_rc(0) == "SUCCESS"
-    assert "AUTH_FAIL" in decode_rc(0x98E)
-    assert frames.split_frames(command)[0][0].role == "command"
+    checks = [
+        ("command tag", command[:2] == b"\x80\x01"),
+        ("command size", int.from_bytes(command[2:6], "big") == len(command) == 22),
+        ("response parse", response.ok and response.tag == 0x8001),
+        ("rc SUCCESS", decode_rc(0) == "SUCCESS"),
+        ("rc session", decode_rc(0x98E) == "AUTH_FAIL (session 1)"),
+        ("rc parameter", decode_rc(0x1D5) == "SIZE (parameter 1)"),
+        ("frame role", frames.split_frames(command)[0][0].role == "command"),
+    ]
+    failed = [name for name, ok in checks if not ok]
+    if failed:
+        print(f"selftest: FAILED {', '.join(failed)}", file=sys.stderr)
+        return 1
     print("selftest: ok")
     return 0
 
@@ -420,7 +446,8 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--command", help="complete command as hex, header included")
     group.add_argument("--cc", help="command code, e.g. 0x17a")
     p.add_argument("--body", help="parameters as hex (no handles)")
-    p.add_argument("--handles", help="handle area as hex (required with --password)")
+    p.add_argument("--handles", help="handle area as hex, sent before the "
+                        "parameters (required with --password)")
     p.add_argument("--password", action="store_true",
                    help="insert an empty password session between handles and "
                         "parameters")
@@ -440,6 +467,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", help="NV index to read, e.g. 0x01c00002")
     p.add_argument("--dump-dir", metavar="DIR")
     p.add_argument("--head", type=int, default=128)
+    p.add_argument("--allow-da", action="store_true",
+                   help="read an index without NO_DA even though a failed "
+                        "empty-password auth increments the DA lockout counter")
     p.set_defaults(func=cmd_nv)
 
     p = sub.add_parser("certs", help="dump endorsement key certificates")
@@ -479,7 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TransportError, WireError, caps.CapabilityError) as exc:
+    except (TransportError, WireError, caps.CapabilityError,
+            device.DeviceError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

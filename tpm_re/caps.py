@@ -61,7 +61,7 @@ class Properties:
         return self.fixed.get(prop, self.variable.get(prop, default))
 
 
-def properties(t: DeviceTransport, start: int = 0x100) -> Properties:
+def properties(t: DeviceTransport) -> Properties:
     """Read fixed (0x1xx) then variable (0x2xx) properties."""
     result = Properties()
     for base, target in ((0x100, result.fixed), (0x200, result.variable)):
@@ -126,9 +126,19 @@ def pcr_banks(t: DeviceTransport) -> list[dict]:
 
 
 def handles(t: DeviceTransport, handle_type: int, count: int = MAX_CAP_COUNT) -> list[int]:
-    data, _ = _get(t, tables.CAP_HANDLES, handle_type, count)
-    rd = Reader(data, label="TPML_HANDLE")
-    return [rd.u32() for _ in range(rd.u32())]
+    """List handles starting at ``handle_type``, following moreData."""
+    out: list[int] = []
+    prop = handle_type
+    for _ in range(64):  # bounded paging
+        data, more = _get(t, tables.CAP_HANDLES, prop, count)
+        rd = Reader(data, label="TPML_HANDLE")
+        page = [rd.u32() for _ in range(rd.u32())]
+        page = [h for h in page if not out or h > out[-1]]
+        out.extend(page)
+        if not more or not page:
+            break
+        prop = out[-1] + 1
+    return out
 
 
 def commands(t: DeviceTransport, start: int = tables.TPM_CC_FIRST,
@@ -150,7 +160,10 @@ def commands(t: DeviceTransport, start: int = tables.TPM_CC_FIRST,
         progressed = False
         for _ in range(count):
             attrs = rd.u32()
-            cc = attrs & 0xFFFF
+            # TPMA_CC: commandIndex in bits 15:0, V in bit 29.  The command
+            # code on the wire is commandIndex with V carried over, so a
+            # vendor command is 0x2000xxxx, never a bare 0x0000xxxx.
+            cc = (attrs & 0xFFFF) | (attrs & tables.VENDOR_CC_MASK)
             if cc in seen:
                 continue
             seen.add(cc)
@@ -170,7 +183,6 @@ def commands(t: DeviceTransport, start: int = tables.TPM_CC_FIRST,
         if not more or not progressed or len(out) >= limit:
             break
     return out
-
 
 
 def ecc_curves(t: DeviceTransport) -> list[int]:

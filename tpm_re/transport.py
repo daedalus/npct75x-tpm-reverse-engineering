@@ -11,6 +11,7 @@ instead of being reported as a truncated frame.
 from __future__ import annotations
 
 import os
+import select
 import struct
 import time
 
@@ -73,26 +74,30 @@ class DeviceTransport:
                 raise TransportError("device accepted 0 bytes")
             view = view[written:]
 
+    def _read_some(self, count: int, deadline: float, what: str) -> bytes:
+        # os.read blocks, so wait for readability first; otherwise the
+        # deadline could only be checked after a hung read returned.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TransportError(f"timeout waiting for {what}")
+        ready, _, _ = select.select([self.fd], [], [], remaining)
+        if not ready:
+            raise TransportError(f"timeout waiting for {what}")
+        chunk = os.read(self.fd, count)
+        if not chunk:
+            raise TransportError(f"device closed while waiting for {what}")
+        return chunk
+
     def _read_stamped(self) -> bytes:
         buf = bytearray()
         deadline = time.monotonic() + self.timeout_s
         while len(buf) < HEADER_SIZE:
-            chunk = os.read(self.fd, 4096)
-            if not chunk:
-                raise TransportError("device closed mid-response")
-            buf.extend(chunk)
-            if time.monotonic() > deadline:
-                raise TransportError("timeout waiting for response header")
+            buf.extend(self._read_some(4096, deadline, "response header"))
         size = struct.unpack(">I", bytes(buf[2:6]))[0]
         if not HEADER_SIZE <= size <= 0x10000:
             raise TransportError(f"implausible response size {size}")
         while len(buf) < size:
-            chunk = os.read(self.fd, size - len(buf))
-            if not chunk:
-                raise TransportError("device closed before full response")
-            buf.extend(chunk)
-            if time.monotonic() > deadline:
-                raise TransportError("timeout waiting for response body")
+            buf.extend(self._read_some(size - len(buf), deadline, "response body"))
         return bytes(buf[:size])
 
     # -- public ------------------------------------------------------------
