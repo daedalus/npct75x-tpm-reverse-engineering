@@ -1,0 +1,50 @@
+# Ignore binaries, evidence, and artifacts - only source code in repo
+*.pe
+*.bin
+*.rom
+*.zip
+*.der
+*.fd
+*.img
+*.log
+*.tmp
+*.swp
+*.swo
+*.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# System backup files
+*.backup
+*.bak
+
+# Evidence and data artifacts (do NOT commit)
+/tmp/opencode/tpmre/
+*.section1.pe
+
+# Build directories
+build/
+dist/
+*.egg
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+
+# Git artifacts
+git/
+git-
+
+# System swap files
+*~
+*.*~
