@@ -23,7 +23,7 @@ __pycache__/
 
 # Evidence and data artifacts (do NOT commit)
 /tmp/opencode/tpmre/
-*.section1.pe
+section1.pe
 
 # Build directories
 build/
