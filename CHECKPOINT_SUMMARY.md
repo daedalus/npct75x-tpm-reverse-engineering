@@ -23,12 +23,12 @@ Use REA to reverse engineer the actual hardware/firmware (Nuvoton NPCT75x) of th
 - **Validity**: Oct 8 2023 → Oct 8 2043
 
 ### Vendor Capability Discovered
-- **Properties**: `0x0=0`, `0x1=0x001AD0F2` (irregular increments), `0x2=0x00004BF0` (static)
-- **Vendor commands**: `0x200,0x201,0x202,0x203,0x204,0x211,0x213,0x214,0x216` (9 total)
+- **Properties**: `0x0=0`, `0x1` slowly and irregularly incrementing (field notes record `0x001AD0A0`…`0x001AD0A6`; `0x001AD0F2` was also recorded, sample time unknown), `0x2=0x00004BF0` (static)
+- **Vendor commands**: `0x20000200,0x20000201,0x20000202,0x20000203,0x20000204,0x20000211,0x20000213,0x20000214,0x20000216` (9 total; `commandIndex` `0x200..0x216` plus the `TPMA_CC.V` bit)
 - **No properties ≥3** reported
 
 ### Tools & Documentation ✅
-- **CLI**: `tpm_re` fully functional (60 tests passing)
+- **CLI**: `tpm_re` fully functional (offline suite: `python3 -m unittest discover -s tests -t .`)
 - **Tools**: `lenovo_bios_fetch.sh`, `sigrok_to_frames.py`, `frames --strace`, `probe --vendor --out`
 - **Docs**: `README.md`, `knowledge/NPCT75x.md` complete with usage, safety model, wire lessons, roadmap
 
@@ -36,11 +36,11 @@ Use REA to reverse engineer the actual hardware/firmware (Nuvoton NPCT75x) of th
 - **Lenovo BIOS package** `m47jt3eusa.zip` downloaded and extracted → `IMAGEM47.ROM` (16 MiB)
 - **NPCT75x firmware NOT found as raw binary** in ROM; likely delivered via **UEFI FMP capsule** (`TpmFmpUefiDrv` module in BIOS)
 - **FMP driver**: `obj_2_FirmwareVolume_7155752.bin/.../section1.pe` (44480 bytes) contains `"TPM FMP H"` strings, confirms FMP capsule handling
-- **Firmware extraction**: Not possible without REA `inspect_firmware_regions`/`inspect_binary_layout` (requires root)
+- **Firmware extraction**: Not done; planned with REA `inspect_firmware_regions`/`inspect_binary_layout` (an external tool, not in this repo)
 
 ### Remaining
 - Firmware acquisition: FMP capsule parsing requires REA MCP tools (node_modules/dist missing) or live system with sudo
-- NV 0x01802006: Protected, requires auth policy/value (not provided)
+- NV 0x01802006: not read. Attributes `PPREAD|AUTHREAD|NO_DA`, so an empty-password attempt is DA-safe. **Unconfirmed**: this file says it needs an auth value, while `knowledge/NPCT75x.md` §3 only says its contents were not interpreted. Confirm which before relying on either.
 
 ## Final Status
 ✅ All tooling and documentation complete  
@@ -48,6 +48,6 @@ Use REA to reverse engineer the actual hardware/firmware (Nuvoton NPCT75x) of th
 ✅ Wire layout corrected (auth before params)  
 ✅ Certificates verified (RSA/ECC EK certs)  
 ✅ Vendor capability discovered (0x100, 9 commands)  
-✅ 53+ tests passing  
+✅ Offline test suite passing  
 ✅ Dossier complete with JSON/MD  
 ✅ FMP driver parsed (PE32+ analysis complete)

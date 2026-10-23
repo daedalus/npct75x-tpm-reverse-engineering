@@ -22,8 +22,8 @@ __pycache__/
 *.bak
 
 # Evidence and data artifacts (do NOT commit)
-/tmp/opencode/tpmre/
-section1.pe
+# probe --out / certs --out / nv --dump-dir output used in the README
+out/
 
 # Build directories
 build/
@@ -40,10 +40,6 @@ env/
 .vscode/
 *.iml
 *.code-workspace
-
-# Git artifacts
-git/
-git-
 
 # System swap files
 *~

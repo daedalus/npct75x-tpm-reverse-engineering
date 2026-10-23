@@ -260,9 +260,5 @@ def write(dossier: dict, out_dir: Path) -> tuple[Path, Path]:
     md_path = out_dir / "tpm-dossier.md"
     json_path.write_text(json.dumps(dossier, indent=2) + "\n")
     md_path.write_text(render_markdown(dossier) + "\n")
-    certs = [
-        device.Certificate(index=int(c["index"], 16), der=b"")
-        for c in dossier["tpm"]["certificates"]
-    ]
-    del certs  # raw DER is written by the `nv` subcommand, not the dossier
+    # raw DER is written by the `certs --out` subcommand, not the dossier
     return json_path, md_path

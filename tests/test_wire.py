@@ -82,8 +82,22 @@ class ReaderTests(unittest.TestCase):
 class RcTests(unittest.TestCase):
     def test_format_zero(self):
         self.assertEqual(wire.decode_rc(0), "SUCCESS")
-        self.assertEqual(wire.decode_rc(0x10A), "PCR")
+        self.assertEqual(wire.decode_rc(0x127), "PCR")
         self.assertEqual(wire.decode_rc(0x921), "LOCKOUT")
+
+    def test_format_zero_numbering_is_sparse(self):
+        # Part 2 Table 16 values, not a sequential renumbering.
+        self.assertEqual(wire.decode_rc(0x103), "SEQUENCE")
+        self.assertEqual(wire.decode_rc(0x10B), "PRIVATE")
+        self.assertEqual(wire.decode_rc(0x149), "NV_AUTHORIZATION")
+        self.assertEqual(wire.decode_rc(0x14C), "NV_DEFINED")
+        self.assertTrue(wire.decode_rc(0x10A).startswith("UNMAPPED"))
+        self.assertTrue(wire.decode_rc(0x917).startswith("UNMAPPED"))
+
+    def test_format_one_parameter(self):
+        # P bit (0x040) set: N is a parameter number
+        self.assertEqual(wire.decode_rc(0x1D5), "SIZE (parameter 1)")
+        self.assertEqual(wire.decode_rc(0x095), "SIZE")
 
     def test_format_one_session(self):
         self.assertIn("AUTH_FAIL", wire.decode_rc(0x98E))
@@ -92,7 +106,7 @@ class RcTests(unittest.TestCase):
     def test_format_one_value(self):
         decoded = wire.decode_rc(0x184)
         self.assertIn("VALUE", decoded)
-        self.assertIn("parameter/handle 1", decoded)
+        self.assertIn("handle 1", decoded)
 
     def test_unmapped_is_explicit(self):
         self.assertTrue(wire.decode_rc(0x7FF).startswith("UNMAPPED"))

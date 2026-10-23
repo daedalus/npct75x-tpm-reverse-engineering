@@ -71,7 +71,8 @@ class CommandTests(unittest.TestCase):
             capability_reply(caps.tables.CAP_COMMANDS, body, more=0),
         ])
         commands = caps.commands(tpm)
-        self.assertEqual([c["cc"] for c in commands], [0x14E, 0xFF])
+        self.assertEqual([c["cc"] for c in commands], [0x14E, 0x200000FF])
+        self.assertEqual(commands[1]["name"], "VENDOR_0x200000FF")
         self.assertFalse(commands[0]["vendor"])
         self.assertTrue(commands[1]["vendor"])
 
@@ -84,6 +85,22 @@ class CommandTests(unittest.TestCase):
         commands = caps.commands(tpm)
         self.assertEqual(len(commands), 1)
         self.assertEqual(len(tpm.replies), 0)
+
+
+class HandleTests(unittest.TestCase):
+    def test_handles_follow_more_data(self):
+        first = capability_reply(
+            caps.tables.CAP_HANDLES,
+            struct.pack(">III", 2, 0x01802006, 0x01C00002), more=1,
+        )
+        second = capability_reply(
+            caps.tables.CAP_HANDLES, struct.pack(">II", 1, 0x01C0000A), more=0,
+        )
+        tpm = FakeTPM([first, second])
+        self.assertEqual(caps.handles(tpm, 0x01000000),
+                         [0x01802006, 0x01C00002, 0x01C0000A])
+        # second page starts after the last handle seen
+        self.assertEqual(struct.unpack(">I", tpm.commands[1][14:18])[0], 0x01C00003)
 
 
 class VendorPropertyTests(unittest.TestCase):

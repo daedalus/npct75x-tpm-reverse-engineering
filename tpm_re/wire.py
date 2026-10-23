@@ -222,41 +222,45 @@ def parse_response(data: bytes) -> Response:
 # response codes
 # --------------------------------------------------------------------------
 
-# Format 0 (no parameter/handle/session trim).
+# Format 0: TPM_RC_VER1 (0x100) errors and TPM_RC_WARN (0x900) warnings,
+# TPM 2.0 Part 2, Table 16.  The numbering is sparse; do not fill gaps.
 _RC_FORMAT0 = {
     0x000: "SUCCESS",
     0x01E: "BAD_TAG",
     0x100: "INITIALIZE",
     0x101: "FAILURE",
-    0x102: "SEQUENCE",
-    0x103: "PRIVATE",
-    0x104: "HMAC",
-    0x105: "DISABLED",
-    0x106: "EXCLUSIVE",
-    0x107: "AUTH_TYPE",
-    0x108: "AUTH_MISSING",
-    0x109: "POLICY",
-    0x10A: "PCR",
-    0x10B: "PCR_CHANGED",
-    0x10C: "UPGRADE",
-    0x10D: "TOO_MANY_CONTEXTS",
-    0x10E: "AUTH_UNAVAILABLE",
-    0x10F: "REBOOT",
-    0x110: "UNBALANCED",
-    0x111: "COMMAND_SIZE",
-    0x112: "COMMAND_CODE",
-    0x113: "AUTHSIZE",
-    0x114: "AUTHFAIL",
-    0x115: "AUTH2FAIL",
-    0x116: "BADCONTEXT",
-    0x117: "NOCONTEXT",
-    0x118: "NOCLEAR",
-    0x119: "RESPONSE",
-    0x11A: "INTEGRITY",
-    0x11B: "TESTING",
-    0x11C: "NOCRYPT",
-    0x11D: "NOAUTH",
-    0x11E: "AUTHORIZE",
+    0x103: "SEQUENCE",
+    0x10B: "PRIVATE",
+    0x119: "HMAC",
+    0x120: "DISABLED",
+    0x121: "EXCLUSIVE",
+    0x124: "AUTH_TYPE",
+    0x125: "AUTH_MISSING",
+    0x126: "POLICY",
+    0x127: "PCR",
+    0x128: "PCR_CHANGED",
+    0x12D: "UPGRADE",
+    0x12E: "TOO_MANY_CONTEXTS",
+    0x12F: "AUTH_UNAVAILABLE",
+    0x130: "REBOOT",
+    0x131: "UNBALANCED",
+    0x142: "COMMAND_SIZE",
+    0x143: "COMMAND_CODE",
+    0x144: "AUTHSIZE",
+    0x145: "AUTH_CONTEXT",
+    0x146: "NV_RANGE",
+    0x147: "NV_SIZE",
+    0x148: "NV_LOCKED",
+    0x149: "NV_AUTHORIZATION",
+    0x14A: "NV_UNINITIALIZED",
+    0x14B: "NV_SPACE",
+    0x14C: "NV_DEFINED",
+    0x150: "BAD_CONTEXT",
+    0x151: "CPHASH",
+    0x152: "PARENT",
+    0x153: "NEEDS_TEST",
+    0x154: "NO_RESULT",
+    0x155: "SENSITIVE",
     0x901: "CONTEXT_GAP",
     0x902: "OBJECT_MEMORY",
     0x903: "SESSION_MEMORY",
@@ -271,12 +275,15 @@ _RC_FORMAT0 = {
     0x921: "LOCKOUT",
     0x922: "RETRY",
     0x923: "NV_UNAVAILABLE",
-    0x924: "NV_UNINITIALIZED",
-    0x925: "NV_SPACE",
-    0x926: "NV_DEFINED",
+    0x97F: "NOT_USED",
 }
 
-# Format 1 base codes (low byte).
+# 0x910..0x916 REFERENCE_H0..H6, 0x918..0x91E REFERENCE_S0..S6 (0x917 is
+# not assigned).
+_RC_FORMAT0.update({0x910 + i: f"REFERENCE_H{i}" for i in range(7)})
+_RC_FORMAT0.update({0x918 + i: f"REFERENCE_S{i}" for i in range(7)})
+
+# Format 1 error numbers, keyed by RC_FMT1 (0x080) | E (bits 5:0).
 _RC_FORMAT1 = {
     0x081: "ASYMMETRIC",
     0x082: "ATTRIBUTES",
@@ -301,7 +308,7 @@ _RC_FORMAT1 = {
     0x09A: "INSUFFICIENT",
     0x09B: "SIGNATURE",
     0x09C: "KEY",
-    0x09D: "POLICY",
+    0x09D: "POLICY_FAIL",
     0x09F: "INTEGRITY",
     0x0A0: "TICKET",
     0x0A1: "RESERVED_BITS",
@@ -313,28 +320,32 @@ _RC_FORMAT1 = {
     0x0A7: "ECC_POINT",
 }
 
-# 0x910..0x91E: reference-value family.
-_RC_FORMAT0.update({
-    0x910 + i: f"REFERENCE_{'H' if i < 8 else 'S'}{i % 8}"
-    for i in range(15)
-})
+_RC_FMT1 = 0x080
+_RC_P = 0x040
 
 
 def decode_rc(rc: int) -> str:
     """Best-effort TPM_RC decoder.
 
-    Format 1 encodes the offending parameter/handle (bits 11:8) or session
-    (bit 11) next to a base code in the low byte. Format 0 codes are direct.
-    Unmapped values are reported explicitly rather than guessed.
+    Format 1 (bit 7 set) carries an error number E in bits 5:0 and a
+    number N in bits 11:8.  With P (bit 6) set, N is the parameter number;
+    otherwise N 1..7 is a handle and N 8..15 is session N-8.  Format 0 codes
+    are direct.  Unmapped values are reported explicitly rather than guessed.
     """
+    if rc & _RC_FMT1:
+        base = _RC_FORMAT1.get(_RC_FMT1 | (rc & 0x3F))
+        if base is None:
+            return f"UNMAPPED_RC_0x{rc:03X}"
+        number = (rc >> 8) & 0x0F
+        if rc & _RC_P:
+            return f"{base} (parameter {number})"
+        if number >= 8:
+            return f"{base} (session {number - 8})"
+        if number:
+            return f"{base} (handle {number})"
+        return base
     if rc in _RC_FORMAT0:
         return _RC_FORMAT0[rc]
-    low = rc & 0xFF
-    if low in _RC_FORMAT1:
-        base = _RC_FORMAT1[low]
-        if rc & 0x800:          # session number, bit 0x800 is the session flag
-            return f"{base} (session {(rc >> 8) & 0x07})"
-        return f"{base} (parameter/handle {(rc >> 8) & 0x0F})"
     return f"UNMAPPED_RC_0x{rc:03X}"
 
 

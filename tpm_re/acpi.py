@@ -7,7 +7,8 @@ CRB interface -- which in turn decides whether a bus-level capture is
 SPI/LPC TIS or memory-mapped CRB.
 
 Reading /sys/firmware/acpi/tables/TPM2 requires root; the parser itself is
-pure and unit-tested against synthetic tables.
+pure and unit-tested against synthetic tables.  ACPI tables are
+little-endian, unlike the TPM 2.0 command stream.
 """
 
 from __future__ import annotations
@@ -70,13 +71,13 @@ def parse_tpm2_table(data: bytes) -> Tpm2Table:
     signature = data[0:4].decode("ascii", "replace")
     if signature != "TPM2":
         problems.append(f"unexpected signature {signature!r}")
-    length = int.from_bytes(data[4:8], "big")
+    length = int.from_bytes(data[4:8], "little")
     revision = data[8]
     oem_id = data[10:16].decode("ascii", "replace").rstrip("\x00 ")
     oem_table_id = data[16:24].decode("ascii", "replace").rstrip("\x00 ")
-    platform_class = int.from_bytes(data[36:38], "big")
-    control_address = int.from_bytes(data[40:48], "big")
-    start_method = int.from_bytes(data[48:52], "big")
+    platform_class = int.from_bytes(data[36:38], "little")
+    control_address = int.from_bytes(data[40:48], "little")
+    start_method = int.from_bytes(data[48:52], "little")
     if length != len(data):
         problems.append(f"header length {length} != file length {len(data)}")
     if start_method not in START_METHODS:

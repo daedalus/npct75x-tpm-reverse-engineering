@@ -12,15 +12,15 @@ def make_table(start_method: int = 2, control: int = 0xFED40000, extra: bytes = 
     total = 52 + len(extra)
     header = bytearray(36)
     header[0:4] = b"TPM2"
-    header[4:8] = total.to_bytes(4, "big")
+    header[4:8] = total.to_bytes(4, "little")
     header[8] = 2
     header[10:16] = b"LENOVO"
     header[16:24] = b"TPM2TBL "
     body = bytearray()
-    body += (0).to_bytes(2, "big")      # platform class
-    body += (0).to_bytes(2, "big")      # reserved
-    body += control.to_bytes(8, "big")
-    body += start_method.to_bytes(4, "big")
+    body += (0).to_bytes(2, "little")      # platform class
+    body += (0).to_bytes(2, "little")      # reserved
+    body += control.to_bytes(8, "little")
+    body += start_method.to_bytes(4, "little")
     return bytes(header) + bytes(body) + extra
 
 
@@ -34,6 +34,13 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(table.start_method, 2)
         self.assertIn("FIFO", table.to_dict()["start_method_name"])
         self.assertEqual(table.problems, [])
+
+    def test_fields_are_little_endian(self):
+        data = make_table(start_method=6, control=0x00000000FED40040)
+        self.assertEqual(data[48:52], b"\x06\x00\x00\x00")
+        table = acpi.parse_tpm2_table(data)
+        self.assertEqual(table.start_method, 6)
+        self.assertEqual(table.control_address, 0xFED40040)
 
     def test_crb_table(self):
         table = acpi.parse_tpm2_table(make_table(start_method=3))

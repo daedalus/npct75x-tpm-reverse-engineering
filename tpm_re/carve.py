@@ -46,9 +46,15 @@ CONTAINERS = {
     b"\x1f\x8b\x08": "gzip",
     b"\xfd7zXZ\x00": "xz",
     b"_FVH": "UEFI firmware volume",
-    b"\xd0\x0d\xfe\xed": "UEFI capsule / FMP",
+    # EFI_FIRMWARE_MANAGEMENT_CAPSULE_ID_GUID
+    # 6DCBD5ED-E82D-4C44-BDA1-7194199AD92A, in on-disk (mixed-endian) order.
+    bytes.fromhex("edd5cb6d2de8444cbda17194199ad92a"): "UEFI FMP capsule",
+    b"\xd0\x0d\xfe\xed": "flattened device tree (FDT)",
     b"\x5a\xa5\xf0\x0f": "Intel flash descriptor (LE)",
 }
+
+# Per signature, so a noisy short signature ("MZ") cannot hide the others.
+MAX_HITS_PER_SIGNATURE = 64
 
 WINDOW_BEFORE = 0x100
 WINDOW_AFTER = 0x1000
@@ -88,15 +94,21 @@ def find_container(data: bytes) -> list[dict]:
     hits = []
     for signature, name in CONTAINERS.items():
         start = 0
+        found = 0
         while True:
             index = data.find(signature, start)
             if index < 0:
                 break
+            if found == MAX_HITS_PER_SIGNATURE:
+                hits.append({"offset": index, "kind": name,
+                             "signature_hex": signature.hex(),
+                             "note": f"more than {MAX_HITS_PER_SIGNATURE} hits; "
+                                     "later ones not listed"})
+                break
             hits.append({"offset": index, "kind": name,
                          "signature_hex": signature.hex()})
+            found += 1
             start = index + 1
-            if len(hits) > 64:
-                return hits
     return sorted(hits, key=lambda item: item["offset"])
 
 
@@ -110,7 +122,9 @@ def scan_bytes(data: bytes, source: str = "<memory>") -> dict:
                 break
             window_start = max(0, index - WINDOW_BEFORE)
             window_end = min(len(data), index + WINDOW_AFTER)
-            window = data[index:window_end]
+            # entropy, strings and hash all describe exactly the bytes that
+            # --extract writes, so the recorded hash can be checked.
+            window = data[window_start:window_end]
             candidates.append({
                 "source": source,
                 "offset": index,
@@ -134,10 +148,6 @@ def scan_bytes(data: bytes, source: str = "<memory>") -> dict:
     }
 
 
-def scan_file(path: Path) -> dict:
-    return scan_bytes(path.read_bytes(), str(path))
-
-
 def scan_path(path: Path, extract_dir: Path | None = None) -> list[dict]:
     targets: list[Path]
     if path.is_dir():
@@ -145,17 +155,16 @@ def scan_path(path: Path, extract_dir: Path | None = None) -> list[dict]:
     else:
         targets = [path]
     reports = []
-    data_cache: dict[Path, bytes] = {}
     for target in targets:
         try:
-            report = scan_file(target)
+            data = target.read_bytes()
         except OSError as exc:
             reports.append({"source": str(target), "error": str(exc)})
             continue
+        report = scan_bytes(data, str(target))
         reports.append(report)
         if extract_dir and report["candidates"]:
-            data_cache[target] = target.read_bytes()
-            _extract(target, report, data_cache[target], extract_dir)
+            _extract(target, report, data, extract_dir)
     return reports
 
 

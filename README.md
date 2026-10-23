@@ -18,6 +18,11 @@ observed facts and the open questions live in
 * Vendor commands are **listed but never sent**: their semantics are unknown.
 * Nothing in this toolkit writes NV, changes auth, starts sessions, or
   enters firmware-update mode.
+* One read can still change state: an `NV_Read` that fails authorization
+  on an index without `TPMA_NV_NO_DA` increments the dictionary-attack
+  lockout counter. `nv --index` (and the EK certificate reader) therefore
+  refuse such indices unless `--allow-da` is passed. `raw` does not apply
+  this check, so an `NV_Read` built by hand is your own responsibility.
 
 ## Requirements
 
@@ -49,8 +54,8 @@ python3 -m tpm_re acpi                           # host/ACPI inventory
 | `caps` | algorithms, PCR banks, ECC curves, advertised commands |
 | `vendor` | read `TPM_CAP_VENDOR_PROPERTY` (0x100), paging included |
 | `raw` | send one command; handles/params/auth passed separately |
-| `pcrs` | PCR digests, optional TCG event-log parse |
-| `nv` | list indices, dump one index to a file |
+| `pcrs` | PCR digests labelled by bank and index (pages past 8), optional TCG event-log parse |
+| `nv` | list indices, dump one index to a file (`--allow-da` for non-`NO_DA` indices) |
 | `certs` | read the RSA/ECC EK certificates from NV |
 | `acpi` | DMI, ACPI TPM2 table, kernel TPM config |
 | `frames` | decode captured TPM byte streams (hex dump or strace) |
@@ -74,8 +79,11 @@ python3 -m tpm_re frames capture.hex          # hexdump-style text
 python3 -m tpm_re frames --strace capture.trace
 ```
 
-Both command and response frames are classified by structure and command
-code plausibility, never by machine state. Unknown command codes are shown
+With `--strace` the syscall direction decides the role (write = command,
+read = response). For other input, frames are classified by structure and
+code plausibility, never by machine state; a code that is both a command
+code and a response code (e.g. `0x14C`, `GetTime` / `TPM_RC_NV_DEFINED`) is
+settled by command/response alternation. Unknown command codes are shown
 as raw values.
 
 ## Design notes
@@ -98,6 +106,10 @@ Two wire-format details cost real debugging time and are worth repeating:
    `authorizationSize` is the byte length of the auth structures only.
    Our first attempt put parameters before the auth area and got
    `TPM_RC_SIZE` (0x095) for every `NV_Read`.
+3. Integers in the ACPI `TPM2` table and in the TCG event log are
+   **little-endian**; only the TPM command stream is big-endian.
+4. A vendor command code keeps the `TPMA_CC.V` bit: the wire code is
+   `0x2000xxxx`, not the 16-bit `commandIndex` alone.
 
 ## Tests
 
@@ -111,10 +123,11 @@ can run without a TPM. Live checks are the CLI commands above.
 ## Roadmap
 
 1. Acquire the Lenovo BIOS/EC update for this machine, extract the NPCT75x
-   firmware payload, and analyse it with REA (`inspect_firmware_regions`,
+   firmware payload, and analyse it with REA, an external tool that is not
+   part of this repository (`inspect_firmware_regions`,
    `inspect_binary_layout`).
 2. Characterise the vendor surface: properties `0x0..0x2` and the nine
-   vendor command codes. Read-only probes only after their semantics are
+   vendor command codes (`0x20000200..0x20000216`). Read-only probes only after their semantics are
    sourced from documentation.
 3. Optional hardware path: SPI capture between the PCH and the TPM, then
    `tools/sigrok_to_frames.py` to turn MOSI/MISO bytes into frames.

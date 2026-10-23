@@ -81,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
 
     text = Path(args.input).read_text(errors="replace")
     data, used = parse_annotations(text, direction=args.direction)
-    out = Path(args.out) if args.out else Path(args.input).with_suffix(".bin")
+    source = Path(args.input)
+    out = Path(args.out) if args.out else source.with_suffix(".bin")
+    if out.resolve() == source.resolve():
+        # never overwrite the annotation file (e.g. an input named *.bin)
+        out = source.with_name(source.name + ".frames.bin")
 
     if args.format == "hex":
         out.write_text(as_hexdump(data))
