@@ -1,4 +1,5 @@
 # Final Checkpoint Summary: Vendor Commands Probed, NV Auth Unknown, Firmware Not in BIOS
+> **Status update (2026-11-19):** This is a historical snapshot. The current audit trail is [`HYPOTHESES.csv`](HYPOTHESES.csv) and the current findings are in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md). In particular, the NV `0x01802006` auth has since been derived statically from the AMI FMP driver (see `tpm_re/nvauth.py`), and the offline suite now has 91 passing tests. Live validation remains deferred: no reboot, no TPM writes.
 
 ## Objective
 Use REA to reverse engineer the actual hardware/firmware (Nuvoton NPCT75x) of the local TPM, not the kernel driver or tpm2-tools stack.

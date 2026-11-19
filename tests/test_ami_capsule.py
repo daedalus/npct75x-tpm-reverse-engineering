@@ -40,6 +40,31 @@ def make_capsule(version=0x03000000, lowest=0x01000000,
     return fixed + table + version_data + firmware_data
 
 
+class NvAuthDerivationTests(unittest.TestCase):
+    def test_seed_matches_driver_bytes(self):
+        from tpm_re import nvauth
+
+        self.assertEqual(len(nvauth.auth_seed()), 26)
+        self.assertEqual(
+            nvauth.auth_seed(),
+            bytes.fromhex("4e006f00760065006d006200650072005200610069006e000000"),
+        )
+
+    def test_derived_auth_matches_statically_proven_value(self):
+        from tpm_re import nvauth
+
+        digest = nvauth.derive_nv_auth()
+        self.assertEqual(len(digest), 32)
+        self.assertEqual(digest, nvauth.NV_AUTH_VALUE)
+        self.assertEqual(nvauth.NV_AUTH_INDEX, 0x01802006)
+
+    def test_other_passphrase_changes_digest(self):
+        from tpm_re import nvauth
+
+        self.assertNotEqual(nvauth.derive_nv_auth("NovemberRainX"),
+                            nvauth.NV_AUTH_VALUE)
+
+
 class AmiCapsuleTests(unittest.TestCase):
     def test_parses_synthetic_capsule(self):
         blob = make_capsule()

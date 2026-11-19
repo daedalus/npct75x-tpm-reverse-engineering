@@ -13,6 +13,7 @@ Submodules:
     frames      decode captured TPM byte streams
     carve       locate candidate TPM firmware payloads in vendor images
     firmware    download firmware packages and scan BIOS images for FMP capsules
+    nvauth      statically derived NV 0x01802006 auth value
     hostmem     /proc/kcore physical-memory inspection
     sigrok      convert sigrok SPI annotations into a TPM byte stream
     vendor_probe  gated, state-touching probes of the vendor surface

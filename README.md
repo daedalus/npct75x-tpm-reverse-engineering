@@ -4,6 +4,22 @@
 
 The toolkit was written while reverse engineering the discrete TPM in a Lenovo ThinkCentre M75q Gen 2 (Nuvoton **NPCT75x**, firmware **7.2**). The observed facts and the open questions live in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md).
 
+## Current status (2026-11-19)
+
+* Offline suite: **91 tests pass** (`python3 -m pytest tests/ -q`).
+* NV `0x01802006` auth is **statically derived** from the AMI FMP DXE driver:
+  `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
+  [`tpm_re/nvauth.py`](tpm_re/nvauth.py). Live validation is deferred — the TPM
+  is wedged and the user has chosen offline-only work (no reboot).
+* The BIOS image contains **AMD fTPM**, not NPCT75x firmware. The AMI FMP
+  driver is a version-reporting/capsule-dispatch shim; its `SetImage` path and
+  the `AMI ` capsule layout are decoded in section 7.1 of the knowledge file.
+* `python3 -m tpm_re ami FILE --extract FW.bin` parses such a capsule offline.
+* Vendor command `0x2000012f` is statically identified as a Nuvoton variant of
+  `FieldUpgradeStart`; it is state-changing and has not been probed live.
+* Current work is offline only: no reboot, no TPM writes, no state-changing
+  vendor commands without explicit authorization.
+
 ## Safety model
 
 * Every command goes through an explicit read-only allowlist.
