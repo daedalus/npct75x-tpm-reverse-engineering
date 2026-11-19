@@ -280,7 +280,62 @@ platform reset.
 
 ---
 
-## 7. Open questions
+## 7. AMI TPM FMP driver — what it actually does (from Ghidra)
+
+Decompiling the rest of `section1.pe` resolves a long-standing assumption:
+**this driver is a version-reporting shim, not a firmware carrier.** There is
+no TPM firmware payload inside it or in the BIOS ROM.
+
+FMP device descriptor (UTF-16LE strings in the image, file offset = VA):
+
+| Offset | Value |
+|---|---|
+| `0x8c80` / `0x8c88` | FMP GUID dwords → `e5dd1403-d622-c24e-8488-c71b17f5e802` |
+| `0x8ce0` | `AMI TPM Firmware Management Update Protocol` |
+| `0x8dc0` | `XX.XX.XX.XX` (display-version template) |
+| `0x8dd8` | `%02x.%02x.%02x.%02x` (version format string) |
+
+`TpmFmpUefiDrv_main` queries the version twice, allocates a 24-byte (`0x18`)
+buffer, calls `TpmFmpUefiDrv_firmware_write(..., 0x18, "%02x...", version)`,
+and populates an FMP `EFI_FIRMWARE_IMAGE_DESCRIPTOR` (image size `0x70`,
+lowest-supported-version index `0xf`, `Unsigned = 1`).
+
+The misleading names are the trap:
+
+* `TpmFmpUefiDrv_capsule_process` is **not a capsule parser** — it is a
+  `SPrint`-style formatter. Its body branches on `%` (`0x25`), `.`, `0`–`9`,
+  hex digits `A`–`F`/`a`–`f`, `-`, ` `, `*`, `\n`, `\r`, and tracks width,
+  precision and left-align flags. It formats a string into the caller buffer.
+* `TpmFmpUefiDrv_firmware_write` therefore **writes no firmware**: it calls
+  that formatter to render the TPM version string (`XX.XX.XX.XX`) into the
+  24-byte descriptor buffer.
+* `TpmFmpUefiDrv_version_payload` reads the 16-byte NV index with `NV_Read`
+  (CC `0x14e`), authorizing with the HMAC-SHA256 session key derived in §6,
+  and returns up to 16 bytes. This confirms the auth chain from the other
+  direction.
+
+Consequences:
+
+* The BIOS FMP device only *reports* `FIRMWARE_VERSION_1/2` (GetCapability
+  properties `0x10B`/`0x10C`) through the UEFI FMP framework. It carries no
+  image and performs no update. NPCT75x firmware lives on-chip and is updated
+  via a separate Nuvoton path (vendor commands / dedicated updater), not by
+  this DXE driver.
+* The driver's PE image is embedded in `IMAGEM47.ROM` at file offset
+  `0xc0b4a4` (MZ header). A full byte-for-byte match against the extracted
+  `section1.pe` fails because extraction applied relocation fixups.
+* The standard FMP capsule GUID `6DCBD5ED-E82D-4C44-BDA1-7194199AD92A` does
+  **not** occur anywhere in the ROM — reinforcing that no TPM firmware
+  capsule is shipped in the BIOS.
+* Runtime efivars contain only the generic AMI/Lenovo TPM config variables
+  (`TpmServFlags`, `OldTPM20FlagData`, `TpmDefaultSetting`,
+  `TPMPERBIOSFLAGS`). None of the driver's own variables (`NovemberRain`,
+  `TpmFwUpdMode`, `TpmFwUpdRollNonce`, `TpmFmp*`) are present — consistent
+  with those being runtime-only.
+
+---
+
+## 8. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6:
    `SHA256(UTF-16LE("NovemberRain\0"))` = `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
@@ -288,10 +343,12 @@ platform reset.
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
 3. Where does the TPM get its firmware? The working assumption is on-die
-   flash in the NPCT75x package with no public read-back command, so the
-   vendor BIOS/EC update is the practical source.
-4. Which Lenovo package contains the TPM payload? Candidate: the ThinkCentre
-   M75q Gen 2 Flash BIOS Update (`ds547344`, BIOS `M47KT33A`). The support
+   flash in the NPCT75x package with no public read-back command. §7 now
+   rules out the BIOS FMP driver as a source — it only reports the version.
+   The practical source is a Nuvoton/Lenovo TPM firmware updater package.
+4. Which Lenovo/Nuvoton package contains the TPM payload? A BIOS update will
+   not (§7). Candidate: a dedicated Nuvoton NPCT75x firmware/updater release
+   or the Lenovo TPM firmware update for this platform. The Lenovo support
    page blocks plain fetches; a direct `download.lenovo.com` URL still needs
    verification.
 5. Why is the BIOS measurement log empty? (Could be a firmware/OS policy,
