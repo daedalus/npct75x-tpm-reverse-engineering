@@ -12,6 +12,10 @@ Submodules:
     acpi        ACPI TPM2 table and host inventory
     frames      decode captured TPM byte streams
     carve       locate candidate TPM firmware payloads in vendor images
+    firmware    download firmware packages and scan BIOS images for FMP capsules
+    hostmem     /proc/kcore physical-memory inspection
+    sigrok      convert sigrok SPI annotations into a TPM byte stream
+    vendor_probe  gated, state-touching probes of the vendor surface
     probe       assemble a dossier from all of the above
     cli         argparse front end
 """

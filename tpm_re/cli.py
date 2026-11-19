@@ -7,7 +7,19 @@ import json
 import sys
 from pathlib import Path
 
-from . import acpi, caps, carve, device, frames, probe, tables
+from . import (
+    acpi,
+    caps,
+    carve,
+    device,
+    firmware,
+    frames,
+    hostmem,
+    probe,
+    sigrok,
+    tables,
+    vendor_probe,
+)
 from .transport import DeviceTransport, TransportError
 from .wire import (
     WireError,
@@ -154,6 +166,19 @@ def cmd_caps(args) -> int:
 
 
 def cmd_vendor(args) -> int:
+    if args.sample is not None:
+        with DeviceTransport(args.tcti) as transport:
+            samples = vendor_probe.sample_property(
+                transport, prop=args.sample, count=args.count,
+                interval_s=args.interval)
+        if args.json:
+            _json_print(samples)
+            return 0
+        for row in samples:
+            print(f"  sample {row['sample']:2d}: prop={row['property']} "
+                  f"value={row['value_hex']} ({row['value']}) "
+                  f"time={row['time_ms']} clock={row['clock_ms']}")
+        return 0
     with DeviceTransport(args.tcti) as transport:
         props = caps.vendor_properties(transport, start=args.start)
     if args.json:
@@ -261,6 +286,55 @@ def cmd_nv(args) -> int:
         index = int(args.index, 0)
         public = device.nv_read_public(transport, index)
         print(json.dumps(public.to_dict(), indent=2))
+
+        if args.bruteforce:
+            if not args.allow_da:
+                print(
+                    f"refusing to brute-force NV auth on 0x{index:08X}: each "
+                    "wrong guess increments the dictionary-attack lockout "
+                    "counter and can lock the TPM. Pass --allow-da to proceed.",
+                    file=sys.stderr,
+                )
+                return 2
+            wordlist = (vendor_probe.load_wordlist(args.bruteforce)
+                        if args.bruteforce != "-"
+                        else vendor_probe.DEFAULT_NV_WORDLIST)
+            result = vendor_probe.brute_force_nv_auth(
+                transport, index, size=args.head, wordlist=wordlist)
+            print(f"brute force: tried {result.tried} password(s)")
+            if result.locked_out:
+                print("  TPM entered LOCKOUT; stop and let the DA counter cool",
+                      file=sys.stderr)
+                return 1
+            if result.found is None:
+                print("  no password in the wordlist matched")
+                return 1
+            print(f"  match: {result.found!r}")
+            print(hexdump(result.data[: args.head] if result.data else b""))
+            return 0
+
+        if args.password is not None:
+            pw = parse_hex(args.password) if args.password else b""
+            size = public.data_size if args.head <= 0 else min(args.head, public.data_size)
+            if pw:
+                # A non-empty password is one wordlist entry; still a DA
+                # hazard on a non-NO_DA index, so honour --allow-da.
+                if device.nv_read_hazard(public) and not args.allow_da:
+                    print(f"refusing: {device.nv_read_hazard(public)} "
+                          "(pass --allow-da to try this password)", file=sys.stderr)
+                    return 2
+                result = vendor_probe.brute_force_nv_auth(
+                    transport, index, size=size, wordlist=(pw,))
+                if result.found is None:
+                    print("password rejected", file=sys.stderr)
+                    return 1
+                data = result.data or b""
+            else:
+                data = device.nv_read(transport, index, size, 0)
+            print(f"read {len(data)} bytes")
+            print(hexdump(data))
+            return 0
+
         data = device.nv_dump(transport, index, allow_da=args.allow_da)
         print(f"read {len(data)} bytes")
         if args.dump_dir:
@@ -271,6 +345,120 @@ def cmd_nv(args) -> int:
             print(f"wrote {path}")
         else:
             print(hexdump(data[: args.head]))
+    return 0
+
+
+def cmd_vendor_probe(args) -> int:
+    """Send vendor commands of unknown semantics (explicitly gated)."""
+    if not args.allow_vendor:
+        print(
+            "refusing to send vendor commands: their semantics are "
+            "undocumented and a reply may change TPM state. Pass "
+            "--allow-vendor to send them anyway.",
+            file=sys.stderr,
+        )
+        return 2
+    handles = parse_hex(args.handles) if args.handles else b""
+    params = parse_hex(args.params) if args.params else b""
+    with DeviceTransport(args.tcti) as transport:
+        if args.cc is not None:
+            results = [vendor_probe.send_vendor(
+                transport, int(args.cc, 0), params=params, handles=handles,
+                password=args.password)]
+        else:
+            results = vendor_probe.sweep_vendor(transport)
+    if args.json:
+        _json_print([r.to_dict() for r in results])
+        return 0
+    for r in results:
+        mark = "OK" if r.ok else f"rc=0x{r.rc:03X} {decode_rc(r.rc)}"
+        print(f"0x{r.cc:08X}: {mark}")
+        if r.params:
+            print(f"  params: {r.params.hex()}")
+    return 0
+
+
+def cmd_fetch(args) -> int:
+    result = firmware.fetch(
+        args.url, Path(args.out), name=args.name,
+        expected_sha256=args.sha256)
+    print(f"url:    {result.url}")
+    print(f"dest:   {result.path}")
+    print(f"size:   {result.size} bytes")
+    print(f"sha256: {result.sha256}")
+    print(f"meta:   {result.meta_path}")
+    print(f"next:   python3 -m tpm_re carve {result.path} --extract OUT/")
+    if args.json:
+        _json_print(result.to_dict())
+    return 0
+
+
+def cmd_fmp(args) -> int:
+    report = firmware.scan_fmp(Path(args.input))
+    if args.json:
+        _json_print(report.to_dict())
+        return 0
+    print(f"{report.source} ({report.size} bytes)")
+    if report.marker_offsets:
+        hits = ", ".join(f"0x{o:08X}" for o in report.marker_offsets)
+        print(f"  {firmware.FMP_MARKER.decode()!r} marker at: {hits}")
+    print(f"  FMP capsules: {len(report.capsules)}")
+    for cap in report.capsules:
+        flags = []
+        if cap.contains_nuvoton:
+            flags.append("NUVOTON")
+        if cap.contains_tpm2:
+            flags.append("TPM2")
+        tag = f" [{','.join(flags)}]" if flags else ""
+        print(f"  +0x{cap.offset:08X} type=0x{cap.capsule_type:08X} "
+              f"image_size={cap.image_size}{tag}")
+        for text in cap.nuvoton_strings[:6]:
+            print(f"      {text!r}")
+    return 0
+
+
+def cmd_sigrok(args) -> int:
+    out, written, used = sigrok.convert(
+        Path(args.input), out_path=Path(args.out) if args.out else None,
+        direction=args.direction, fmt=args.format)
+    print(f"annotations: {used} line(s) -> {written} byte(s) ({args.direction})",
+          file=sys.stderr)
+    if not written:
+        print("no byte tokens matched; check --direction", file=sys.stderr)
+        return 1
+    print(f"wrote {out}", file=sys.stderr)
+    print(f"next: python3 -m tpm_re frames {out}", file=sys.stderr)
+    return 0
+
+
+def cmd_memmap(args) -> int:
+    result = hostmem.map_physical(int(args.address, 0), length=args.length)
+    if args.json:
+        _json_print(result)
+        return 0
+    if not result["found"]:
+        print(f"{result['target']}: no /proc/kcore mapping covers this address")
+        return 1
+    print(f"target: {result['target']}")
+    print(f"mapped: {result['paddr_start']}..{result['paddr_end']} "
+          f"vaddr={result['vaddr']}")
+    print(f"data:   {result['data_hex']}")
+    print(f"ascii:  {result['ascii']}")
+    return 0
+
+
+def cmd_kcore(args) -> int:
+    markers = (tuple(m.encode() for m in args.marker)
+               if args.marker else hostmem.DEFAULT_MARKERS)
+    hits = hostmem.scan_kcore(markers=markers, total_bytes=args.limit)
+    if args.json:
+        _json_print(hits)
+        return 0
+    if not hits:
+        print("no markers found")
+        return 1
+    for hit in hits:
+        print(f"  {hit['marker']!r} at {hit['offset']}: {hit['context_hex'][:80]}")
     return 0
 
 
@@ -438,6 +626,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("vendor", help="read the vendor property space (read-only)")
     p.add_argument("--start", type=lambda v: int(v, 0), default=0,
                    help="first vendor property to ask for (default 0)")
+    p.add_argument("--sample", type=lambda v: int(v, 0), default=None,
+                   metavar="PROP",
+                   help="instead of listing, sample this property over time "
+                        "and correlate with ReadClock")
+    p.add_argument("--count", type=int, default=10,
+                   help="number of samples for --sample (default 10)")
+    p.add_argument("--interval", type=float, default=1.0,
+                   help="seconds between samples for --sample (default 1.0)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_vendor)
 
@@ -470,6 +666,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-da", action="store_true",
                    help="read an index without NO_DA even though a failed "
                         "empty-password auth increments the DA lockout counter")
+    p.add_argument("--password", metavar="HEX", default=None,
+                   help="read the index with this hex password (empty string "
+                        "for an explicit empty password)")
+    p.add_argument("--bruteforce", metavar="WORDLIST", default=None,
+                   help="dictionary-attack the index auth with a wordlist file "
+                        "('-' uses the built-in list); requires --allow-da "
+                        "because every miss increments the DA lockout counter")
     p.set_defaults(func=cmd_nv)
 
     p = sub.add_parser("certs", help="dump endorsement key certificates")
@@ -498,6 +701,57 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_carve)
 
+    p = sub.add_parser("vendor-probe",
+                       help="send vendor commands of unknown semantics (gated)")
+    p.add_argument("--cc", help="vendor command code, e.g. 0x20000204; "
+                                "omit to sweep the known NPCT vendor codes")
+    p.add_argument("--handles", help="handle area as hex")
+    p.add_argument("--params", help="parameter area as hex")
+    p.add_argument("--password", action="store_true",
+                   help="include an empty password session")
+    p.add_argument("--allow-vendor", action="store_true",
+                   help="required: confirm you accept sending undocumented "
+                        "vendor commands that may change TPM state")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_vendor_probe)
+
+    p = sub.add_parser("fetch", help="download a firmware/BIOS package with a meta record")
+    p.add_argument("url")
+    p.add_argument("--out", metavar="DIR", default=".")
+    p.add_argument("--name", metavar="FILE", help="local file name")
+    p.add_argument("--sha256", metavar="HEX", help="expected SHA-256; rejected on mismatch")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("fmp", help="scan a BIOS image for UEFI FMP capsules")
+    p.add_argument("input")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_fmp)
+
+    p = sub.add_parser("sigrok", help="convert sigrok SPI annotations to a byte stream")
+    p.add_argument("input")
+    p.add_argument("-o", "--out", help="output file (default: <input>.bin)")
+    p.add_argument("--direction", default="mosi", help="mosi (commands) or miso (responses)")
+    p.add_argument("--format", choices=("bin", "hex"), default="bin")
+    p.set_defaults(func=cmd_sigrok)
+
+    p = sub.add_parser("memmap", help="map a physical address via /proc/kcore")
+    p.add_argument("--address", default=hex(hostmem.TPM_MMIO_BASE),
+                   help=f"physical address (default {hex(hostmem.TPM_MMIO_BASE)}, the TPM MMIO base)")
+    p.add_argument("--length", type=int, default=256)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_memmap)
+
+    p = sub.add_parser("kcore", help="scan /proc/kcore for firmware markers")
+    p.add_argument("--marker", action="append",
+                   help="marker string to search for (repeatable; default: "
+                        "NPCT/Nuvoton/TPM markers)")
+    p.add_argument("--limit", type=lambda v: int(v, 0),
+                   default=2 * 1024 * 1024 * 1024,
+                   help="bytes of /proc/kcore to scan (default 2 GiB)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_kcore)
+
     p = sub.add_parser("selftest", help="offline sanity checks")
     p.set_defaults(func=cmd_selftest)
 
@@ -510,7 +764,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (TransportError, WireError, caps.CapabilityError,
-            device.DeviceError, ValueError, OSError) as exc:
+            device.DeviceError, firmware.FirmwareError, hostmem.HostMemError,
+            ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

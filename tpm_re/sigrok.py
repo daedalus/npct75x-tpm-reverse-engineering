@@ -1,27 +1,23 @@
-#!/usr/bin/env python3
 """Turn sigrok-cli SPI annotation text into a TPM byte stream.
 
-`tpm_re frames` needs the bytes that crossed MOSI (commands) or MISO
-(responses).  sigrok-cli can emit one annotation per decoded byte:
+``tpm_re frames`` needs the bytes that crossed MOSI (commands) or MISO
+(responses).  sigrok-cli can emit one annotation per decoded byte::
 
     sigrok-cli -i capture.sr \
         -P spi:cs=D0:clk=D1:mosi=D2:miso=D3 \
         -A spi=mosi:miso > annotations.txt
-    tools/sigrok_to_frames.py annotations.txt --direction mosi -o command.bin
+    python3 -m tpm_re sigrok annotations.txt --direction mosi -o command.bin
     python3 -m tpm_re frames command.bin
 
 The exact annotation wording depends on the sigrok version and the protocol
 decoder, so this parser is deliberately tolerant: it takes the text after the
-last ':' on each line, keeps two-digit hex tokens, and ignores everything
-else.  Read the output summary; if no bytes matched, inspect a few lines of
-the annotation file and adjust --direction.
+last ``:`` on each line, keeps two-digit hex tokens, and ignores everything
+else.  (was ``tools/sigrok_to_frames.py``)
 """
 
 from __future__ import annotations
 
-import argparse
 import re
-import sys
 from pathlib import Path
 
 _BYTE = re.compile(r"(?:0x)?([0-9a-fA-F]{2})")
@@ -61,7 +57,7 @@ def parse_annotations(text: str, direction: str = "mosi") -> tuple[bytes, int]:
 
 
 def as_hexdump(data: bytes, width: int = 16) -> str:
-    """Text form that frames.parse_hexdump_text understands."""
+    """Text form that ``frames.parse_hexdump_text`` understands."""
     lines = []
     for offset in range(0, len(data), width):
         chunk = data[offset:offset + width]
@@ -69,39 +65,23 @@ def as_hexdump(data: bytes, width: int = 16) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("input", help="sigrok-cli annotation text")
-    parser.add_argument("-o", "--out", help="output file (default: <input>.bin)")
-    parser.add_argument("--direction", default="mosi",
-                        help="annotation direction to keep: mosi or miso")
-    parser.add_argument("--format", choices=("bin", "hex"), default="bin",
-                        help="bin (raw bytes) or hex (text hexdump)")
-    args = parser.parse_args(argv)
+def convert(input_path: Path, out_path: Path | None = None,
+            direction: str = "mosi", fmt: str = "bin") -> tuple[Path, int, int]:
+    """Read an annotation file and write a byte stream (or hexdump).
 
-    text = Path(args.input).read_text(errors="replace")
-    data, used = parse_annotations(text, direction=args.direction)
-    source = Path(args.input)
-    out = Path(args.out) if args.out else source.with_suffix(".bin")
-    if out.resolve() == source.resolve():
+    Returns (output path, bytes written, source lines used).
+    """
+    input_path = Path(input_path)
+    text = input_path.read_text(errors="replace")
+    data, used = parse_annotations(text, direction=direction)
+
+    out = Path(out_path) if out_path else input_path.with_suffix(".bin")
+    if out.resolve() == input_path.resolve():
         # never overwrite the annotation file (e.g. an input named *.bin)
-        out = source.with_name(source.name + ".frames.bin")
+        out = input_path.with_name(input_path.name + ".frames.bin")
 
-    if args.format == "hex":
+    if fmt == "hex":
         out.write_text(as_hexdump(data))
     else:
         out.write_bytes(data)
-
-    print(f"annotations: {used} line(s) -> {len(data)} byte(s) "
-          f"({args.direction})", file=sys.stderr)
-    if not data:
-        print("no byte tokens matched; inspect the annotation file and check "
-              "--direction", file=sys.stderr)
-        return 1
-    print(f"wrote {out}", file=sys.stderr)
-    print(f"next: python3 -m tpm_re frames {out}", file=sys.stderr)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return out, len(data), used
