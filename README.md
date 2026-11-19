@@ -48,7 +48,41 @@ python3 -m tpm_re acpi                           # host/ACPI inventory
 | `acpi` | DMI, ACPI TPM2 table, kernel TPM config |
 | `frames` | decode captured TPM byte streams (hex dump or strace) |
 | `carve` | scan vendor images for TPM firmware candidates |
+| `fmp` | scan a BIOS image for UEFI FMP capsules and the `TPM FMP H` marker |
+| `fetch` | download a firmware/BIOS package and record a `.meta` (URL, size, SHA-256) |
+| `sigrok` | convert sigrok SPI annotations into a TPM byte stream for `frames` |
+| `memmap` | map a physical address (default: the TPM MMIO base) via `/proc/kcore` |
+| `kcore` | scan `/proc/kcore` for NPCT/Nuvoton/TPM firmware markers |
+| `vendor-probe` | **gated** — send vendor commands of unknown semantics (`--allow-vendor`) |
 | `selftest` | offline sanity checks |
+
+Everything is reachable through this one entry point; there are no separate
+helper scripts to run.
+
+### Gated, state-touching probes
+
+The read-only default is enforced, but three investigation paths can change
+TPM state and are therefore each behind an explicit flag:
+
+```sh
+# send an undocumented vendor command (or sweep all known NPCT vendor codes)
+python3 -m tpm_re vendor-probe --allow-vendor --cc 0x20000204
+python3 -m tpm_re vendor-probe --allow-vendor
+
+# sample a vendor property over time, correlated with ReadClock
+python3 -m tpm_re vendor --sample 0x1 --count 10 --interval 1
+
+# read an NV index with a specific password, or dictionary-attack its auth
+python3 -m tpm_re nv --index 0x01802006 --password deadbeef --allow-da
+python3 -m tpm_re nv --index 0x01802006 --bruteforce wordlist.txt --allow-da
+```
+
+`vendor-probe` refuses to send anything without `--allow-vendor`. The NV
+password and brute-force paths refuse without `--allow-da`, because every
+failed auth on an index lacking `TPMA_NV_NO_DA` increments the
+dictionary-attack lockout counter and can lock the TPM. A `--bruteforce -`
+uses the built-in wordlist; a file has one password per line (`hex:DEADBEEF`
+for binary auth values).
 
 `raw` example — note that for a session command the handle area and parameter area are separate arguments, because the wire layout is `handles | authorizationSize + auth | parameters`:
 
@@ -66,6 +100,15 @@ python3 -m tpm_re frames --strace capture.trace
 ```
 
 With `--strace` the syscall direction decides the role (write = command, read = response). For other input, `frames` are classified by structure and code plausibility, never by machine state; a code that is both a command code and a response code (e.g. `0x14C`, `GetTime` / `TPM_RC_NV_DEFINED`) is settled by command/response alternation. Unknown command codes are shown as raw values.
+
+For a hardware SPI capture, turn sigrok-cli annotations into a byte stream first:
+
+```sh
+sigrok-cli -i capture.sr -P spi:cs=D0:clk=D1:mosi=D2:miso=D3 \
+    -A spi=mosi:miso > annotations.txt
+python3 -m tpm_re sigrok annotations.txt --direction mosi -o command.bin
+python3 -m tpm_re frames command.bin
+```
 
 ## Design notes
 
@@ -89,41 +132,32 @@ python3 -m unittest discover -s tests -t .
 
 The suite is offline: it uses fake transports and synthetic buffers, so it can run without a TPM. Live checks are the CLI commands above.
 
+## Consolidation note
+
+Earlier iterations left a scatter of one-off helper scripts under `tools/`,
+`tools/opencode/` and `knowledge/tools/`. They have all been folded into the
+single `tpm-re` CLI:
+
+| old script(s) | now |
+|---|---|
+| `find_fmp.py`, `opencode/parse_fmp.py` | `tpm-re fmp` (module `tpm_re/firmware.py`) |
+| `lenovo_bios_fetch.sh` | `tpm-re fetch` (module `tpm_re/firmware.py`) |
+| `sigrok_to_frames.py` | `tpm-re sigrok` (module `tpm_re/sigrok.py`) |
+| `knowledge/tools/memmap.py` | `tpm-re memmap` (module `tpm_re/hostmem.py`) |
+| `knowledge/tools/scan_kcore.py` | `tpm-re kcore` (module `tpm_re/hostmem.py`) |
+| `tpm2_acpi.py` | already covered by `tpm-re acpi` (removed) |
+| `opencode/probe_*`, `test_auth.py`, `sample_vendor_prop.py`, … | `tpm-re vendor-probe`, `vendor --sample`, `nv --password/--bruteforce` (module `tpm_re/vendor_probe.py`) |
+
+The experiment scripts had hard-coded paths and sent undocumented vendor
+commands and brute-forced NV auth inline; the folded-in versions take their
+targets as arguments and sit behind the `--allow-vendor` / `--allow-da` gates
+described above. There are no standalone scripts left to run.
+
 ## Roadmap
 
-1. Acquire the Lenovo BIOS/EC update for this machine, extract the NPCT75x firmware payload, and analyse it with REA, an external tool that is not part of this repository (`inspect_firmware_regions`, `inspect_binary_layout`).
-2. Characterise the vendor surface: properties `0x0..0x2` and the nine vendor command codes (`0x20000200..0x20000216`). Read-only probes only after their semantics are sourced from documentation.
-3. Optional hardware path: SPI capture between the PCH and the TPM, then `tools/sigrok_to_frames.py` to turn MOSI/MISO bytes into frames.
-
-## Generated tools (from `/tmp/opencode/`)
-
-These scripts were extracted during the investigation and placed under `tools/opencode/`:
-
-- `continue_probing.py`
-- `deep_probe.py`
-- `long_sample.py`
-- `parse_fmp.py`
-- `probe_all.py`
-- `probe_deep2.py`
-- `probe_state.py`
-- `probe_successful_vendors.py`
-- `probe_vendor2.py`
-- `probe_vendor_cmds.py`
-- `probe_vendor_deep.py`
-- `sample_vendor_prop.py`
-- `test_auth.py`
-- `test_raw_auth.py`
-- `test_remaining.py`
-
-Plus core toolkit files:
-- `find_fmp.py` — scans BIOS image for FMP ("TPM FMP H") signatures
-- `tpm2_acpi.py` — parses the TPM2 ACPI table
-- `sigrok_to_frames.py` — converts SPI frame traffic into frames
-- `lenovo_bios_fetch.sh` — downloads the Lenovo BIOS/EFI package
-- `memmap.py` — maps physical TPM addresses via `/proc/kcore` program headers
-- `scan_kcore.py` — scans `/proc/kcore` chunks for NPCT/Nuvoton/TPM firmware signatures
-
-All files are ready for commit. The firmware extraction itself remains blocked until hardware access (SPI dump) or vendor documentation is available.
+1. Acquire the Lenovo BIOS/EC update for this machine (`tpm-re fetch`), scan it for the FMP capsule (`tpm-re fmp` / `tpm-re carve`), extract the NPCT75x firmware payload, and analyse it with REA, an external tool that is not part of this repository (`inspect_firmware_regions`, `inspect_binary_layout`).
+2. Characterise the vendor surface: properties `0x0..0x2` and the nine vendor command codes (`0x20000200..0x20000216`), via `tpm-re vendor --sample` and `tpm-re vendor-probe --allow-vendor`. Interpret results only once their semantics are sourced from documentation.
+3. Optional hardware path: SPI capture between the PCH and the TPM, then `tpm-re sigrok` to turn MOSI/MISO bytes into frames and `tpm-re frames` to decode them.
 
 ## Field notes
 
@@ -136,20 +170,6 @@ See [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md) for detailed observations.
 3. Where does the TPM get its firmware? Candidate: the ThinkCentre M75q Gen 2 Flash BIOS Update (`ds547344`, BIOS `M47KT33A`). Support page blocks plain fetches; a direct `download.lenovo.com` URL needs verification.
 4. Why is the BIOS measurement log empty?
 5. Does `FIRMWARE_VERSION_2` combine with version 1 into a four-part version?
-
-## Tests
-
-Run the test suite:
-
-```sh
-python3 -m unittest discover -s tests -t .
-```
-
-## Roadmap items
-
-- [ ] Obtain sudo passwordless access (currently requires password) to read `/dev/mem` for physical memory dumps.
-- [ ] Hardware SPI capture (Bus Pirate / logic analyzer) to dump TPM chip flash.
-- [ ] Fetch Lenovo NPCT75x TPM firmware update package from support site.
 
 ---
 
