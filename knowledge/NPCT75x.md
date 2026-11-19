@@ -335,7 +335,34 @@ Consequences:
 
 ---
 
-## 8. Open questions
+## 8. NV `0x01802006` access chain — standard TPM commands only
+
+A second decompilation pass mapped every reference to the index. The driver
+never sends a vendor CC to reach it; it uses the ordinary TPM 2.0 command
+set. Decoded with the CC names in `tpm_re/tables.py` (constants are stored
+little-endian in the PE, so e.g. `0x69010000` → wire CC `0x169`):
+
+| Function | CC | Command | Role |
+|---|---|---|---|
+| `FUN_00005bd4` | `0x169` | `NV_ReadPublic` | Reads the NV public area (nameAlg, attrs, dataSize, authPolicy) before any access |
+| `TpmFmpUefiDrv_version_payload` | `0x14E` | `NV_Read` | Reads the 16-byte payload, authorized by the §6 HMAC session |
+| `TpmFmpUefiDrv_nv_init` | `0x12A` | `NV_DefineSpace` | Creates the index with attrs `0x42050005`, nameAlg SHA256, size 16 |
+| `FUN_00007124` | `0x176` | `StartAuthSession` | Creates the policy session |
+| `FUN_0000716c` | `0x151` | `PolicySecret` | Contributes a secret to the policy digest |
+| `TpmFmpUefiDrv_data_hash_check` | `0x149` | `PolicyNV` | Compares against the NV payload (`0x10` bytes) |
+| `FUN_00006980` | `0x16C` | `PolicyCommandCode` | Limits the session to one command |
+| `FUN_00006aec` | `0x189` | `PolicyGetDigest` | Retrieves the resulting policy digest |
+| `FUN_00006d34` | `0x12E` | `SetPrimaryPolicy` | Installs the digest as a primary policy |
+
+This matches the driver's debug strings `TPM2SimpleGetPolicyHandleWithPHAuthNull`,
+`GetRtTpmFwUpdPolicyHndl` and `Tpm20ResetEmptyPlatformAuth`: the policy chain
+is firmware-update authorization, not an obscure vendor protocol. The 16-byte
+payload participates in a `PolicyNV` comparison, so it is best understood as
+an authorization/anti-rollback value rather than a firmware image.
+
+---
+
+## 9. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6:
    `SHA256(UTF-16LE("NovemberRain\0"))` = `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
