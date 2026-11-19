@@ -458,9 +458,10 @@ Associated detection/state:
    §8.1 adds `0x2000012f`, statically identified as a vendor
    `FieldUpgradeStart`; it is state-changing and unprobed.
 3. Where does the TPM get its firmware? The working assumption is on-die
-   flash in the NPCT75x package with no public read-back command. §7 now
-   rules out the BIOS FMP driver as a source — it only reports the version.
-   The practical source is a Nuvoton/Lenovo TPM firmware updater package.
+   flash in the NPCT75x package with no public read-back command. §7 shows the
+   BIOS FMP driver has a real capsule-dispatch/`SetImage` path but ships no
+   firmware image, so it is not the source. The practical source is a
+   Nuvoton/Lenovo TPM firmware updater package.
 4. Which Lenovo/Nuvoton package contains the TPM payload? A BIOS update will
    not (§7). Candidate: a dedicated Nuvoton NPCT75x firmware/updater release
    or the Lenovo TPM firmware update for this platform. The Lenovo support
