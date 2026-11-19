@@ -1,5 +1,5 @@
 # Reverse Engineering Status — Nuvoton NPCT75x TPM
-> **Status update (2026-11-19):** This is a historical snapshot. The current audit trail is [`HYPOTHESES.csv`](HYPOTHESES.csv) and the current findings are in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md). In particular, the NV `0x01802006` auth has since been derived statically from the AMI FMP driver (see `tpm_re/nvauth.py`), and the offline suite now has 91 passing tests. Live validation remains deferred: no reboot, no TPM writes.
+> **Status update (2026-11-19):** This is a historical snapshot. The current audit trail is [`HYPOTHESES.csv`](HYPOTHESES.csv) and the current findings are in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md). In particular, the NV `0x01802006` auth has since been derived statically from the AMI FMP driver (see `tpm_re/nvauth.py`), and the offline suite now has 91 passing tests. The TPM has since been permanently wedged by a 0x20000202 probe; a warm reboot and a cold power cycle failed to recover it, so live validation is impossible on this machine.
 
 ## Completed ✅
 

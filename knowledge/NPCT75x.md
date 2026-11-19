@@ -297,8 +297,21 @@ With explicit authorization to reset the TPM but not reboot the platform:
   operations are applied at the next platform boot, and guessing the op code
   could select "TPM Clear", so it was not invoked.
 
-Conclusion: the wedge cannot be cleared without a platform-level reset. A
-full reboot is the remaining path to live validation.
+**2026-11-19 post-mortem:** a full warm reboot and then a true cold power
+cycle (RTC-alarm shutdown, ~150 s off, automatic power-on) were both
+authorized and performed. Neither recovered the chip. After *both* cycles
+`/dev/tpm*` is absent, the `TPM2` ACPI table is gone, `\_SB_.TPM_` is now
+enumerated as `PNP0C31:00` ("TPM 1.2 Device") with `_STA = 0` (disabled), and
+MMIO at `0xfed40000` still reads `ffffffff` for `ACCESS`, `STS` and `DID_VID`.
+UEFI TPM configuration variables (`TpmServFlags`, `OldTPM20FlagData`,
+`TpmDefaultSetting`, `TPMPERBIOSFLAGS`) are byte-for-byte unchanged, so the
+firmware is disabling the device because the silicon never answers, not
+because a setting changed.
+
+Conclusion: the `0x20000202` probe with 16 zero-byte parameters permanently
+wedged this NPCT75x. No software-level or platform-level reset short of
+hardware replacement recovers it. Live validation of the NV auth is no
+longer possible on this machine.
 
 ---
 
@@ -474,7 +487,9 @@ Associated detection/state:
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6:
    `SHA256(UTF-16LE("NovemberRain\0"))` = `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
-   Live confirmation pending after TPM recovery.
+   Live confirmation is impossible on this machine: the TPM was
+   permanently wedged by the `0x20000202` probe and does not recover after
+   S3, a warm reboot, or a cold power cycle (see §6.1).
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
    §8.1 adds `0x2000012f`, statically identified as a vendor
