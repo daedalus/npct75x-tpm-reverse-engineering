@@ -356,11 +356,18 @@ not-auto-defined functions at those addresses (file offset = VA) shows:
   type `4`); section types `1` and `2` are recognized. Each section payload is
   tried against a chain of backends until one succeeds:
   `0x1618` → `0x4cc8` → `0x4220` → `0x553c` → `0x3b4c`.
-* `FUN_00004220` and `FUN_00003b4c` locate an FMP protocol by GUID, call
-  `CheckImage`/`GetImageInfo`, show the confirmation
-  *"Are you sure want to flash TPM FW. All TPM data will be cleared"*, then call
-  `SetImage`. Strings `It might be TPM recovery` / `Keep Process?` and
-  `Remaining Updates Count: %04d` belong to this flow.
+* `FUN_00004220` and `FUN_00003b4c` are both clients of the **same** FMP
+  protocol GUID `86c77a67-0b97-4633-a187-49104d0685c7`. The first validates
+  via `CheckImage` (protocol slot 3); the second calls `GetImageInfo` (slot 0)
+  and requires the image-type GUID at `image+4` to equal
+  `41e18891-fb01-4da3-a483-5b05ccbb5767` (built byte-by-byte on the stack, so
+  it does not appear as a contiguous constant in the driver). Both show the
+  confirmation *"Are you sure want to flash TPM FW. All TPM data will be
+  cleared"*, then call `SetImage`. Strings `It might be TPM recovery` /
+  `Keep Process?` and `Remaining Updates Count: %04d` belong to this flow.
+  A second GUID, `27bc9064-eded-4820-85ce-47ba9b3e4920`, is used for the
+  client's UEFI variable access. Neither GUID occurs anywhere in
+  `IMAGEM47.ROM`, confirming no matching capsule is shipped in the BIOS.
 * Successful/failed updates are recorded in the `TpmFmpLastUpdVersion`
   (`0x8e00`), `TpmFmpVersion` (`0x8da0`), `TpmFmpLowestSupportVersion`
   (`0x8e98`) and `TpmFmpLastUpdState` (`0x8e30`) UEFI variables.
