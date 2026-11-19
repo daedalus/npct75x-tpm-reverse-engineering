@@ -280,17 +280,26 @@ platform reset.
 
 ---
 
-## 7. AMI TPM FMP driver — what it actually does (from Ghidra)
+## 7. AMI TPM FMP driver — structure (from Ghidra)
 
-Decompiling the rest of `section1.pe` resolves a long-standing assumption:
-**this driver is a version-reporting shim, not a firmware carrier.** There is
-no TPM firmware payload inside it or in the BIOS ROM.
+Decompiling `section1.pe` shows the DXE is both an FMP **device** (reports the
+TPM version) and an FMP **update client** (accepts `AMI ` capsules and
+dispatches them to several backends). It still carries no firmware image of
+its own.
+
+**Correction to an earlier note**: the data at `0x8c80`/`0x8c88` is *not* the
+FMP GUID — it is the vendor GUID used for the `TpmFmp*` UEFI variables
+(`41ac299a-ce34-418c-86c3-600be599794f`). `TpmFmpUefiDrv_main_install`
+installs the FMP protocol with GUID **`86c77a67-0b97-4633-a187-49104d0685c7`**
+(data at `0x8c40`). The GUID at `0x8be0`,
+`e5dd1403-d622-c24e-8488-c71b17f5e802`, is `gEfiHashProtocolGuid`;
+`aa40b6f5-0187-4e36-be59-0504efebc417` is `gEfiHashAlgorithmSha256Guid`.
+Both are consumed by `TpmFmpUefiDrv_setup_hash`.
 
 FMP device descriptor (UTF-16LE strings in the image, file offset = VA):
 
 | Offset | Value |
 |---|---|
-| `0x8c80` / `0x8c88` | FMP GUID dwords → `e5dd1403-d622-c24e-8488-c71b17f5e802` |
 | `0x8ce0` | `AMI TPM Firmware Management Update Protocol` |
 | `0x8dc0` | `XX.XX.XX.XX` (display-version template) |
 | `0x8dd8` | `%02x.%02x.%02x.%02x` (version format string) |
@@ -316,11 +325,10 @@ The misleading names are the trap:
 
 Consequences:
 
-* The BIOS FMP device only *reports* `FIRMWARE_VERSION_1/2` (GetCapability
-  properties `0x10B`/`0x10C`) through the UEFI FMP framework. It carries no
-  image and performs no update. NPCT75x firmware lives on-chip and is updated
-  via a separate Nuvoton path (vendor commands / dedicated updater), not by
-  this DXE driver.
+* The FMP *descriptor* reports `FIRMWARE_VERSION_1/2` (GetCapability properties
+  `0x10B`/`0x10C`) through the UEFI FMP framework, but the driver contains no
+  firmware image of its own — so no payload can be carved from it or from the
+  BIOS ROM.
 * The driver's PE image is embedded in `IMAGEM47.ROM` at file offset
   `0xc0b4a4` (MZ header). A full byte-for-byte match against the extracted
   `section1.pe` fails because extraction applied relocation fixups.
@@ -332,6 +340,34 @@ Consequences:
   `TPMPERBIOSFLAGS`). None of the driver's own variables (`NovemberRain`,
   `TpmFwUpdMode`, `TpmFwUpdRollNonce`, `TpmFmp*`) are present — consistent
   with those being runtime-only.
+
+### 7.1 FMP capsule format and update backends
+
+`main_install` installs the six-entry protocol table:
+`GetImageInfo @0x830`, `GetImage @0x928` (stub returning `EFI_UNSUPPORTED`),
+`SetImage @0xa74`, `CheckImage @0x934`, `EraseCapsule @0x928`,
+`WriteCapsule @0x928`. The update path is therefore real. Disassembling the
+not-auto-defined functions at those addresses (file offset = VA) shows:
+
+* Both `CheckImage` and `SetImage` require the ASCII magic **`AMI `**
+  (`0x20494d41`) at offset `0` of the capsule image. `SetImage` reads a version
+  dword at `+0x10` and a lowest-supported-version dword at `+0x14`.
+* The capsule has a section table of 16-byte descriptors (offset `8`, size `4`,
+  type `4`); section types `1` and `2` are recognized. Each section payload is
+  tried against a chain of backends until one succeeds:
+  `0x1618` → `0x4cc8` → `0x4220` → `0x553c` → `0x3b4c`.
+* `FUN_00004220` and `FUN_00003b4c` locate an FMP protocol by GUID, call
+  `CheckImage`/`GetImageInfo`, show the confirmation
+  *"Are you sure want to flash TPM FW. All TPM data will be cleared"*, then call
+  `SetImage`. Strings `It might be TPM recovery` / `Keep Process?` and
+  `Remaining Updates Count: %04d` belong to this flow.
+* Successful/failed updates are recorded in the `TpmFmpLastUpdVersion`
+  (`0x8e00`), `TpmFmpVersion` (`0x8da0`), `TpmFmpLowestSupportVersion`
+  (`0x8e98`) and `TpmFmpLastUpdState` (`0x8e30`) UEFI variables.
+
+So the mechanism to flash a TPM firmware capsule is present; only the capsule
+itself is missing. A Lenovo/Nuvoton TPM firmware update package would supply
+it, and its sections can be parsed with the layout above.
 
 ---
 
