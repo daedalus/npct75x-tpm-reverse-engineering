@@ -396,6 +396,33 @@ is firmware-update authorization, not an obscure vendor protocol. The 16-byte
 payload participates in a `PolicyNV` comparison, so it is best understood as
 an authorization/anti-rollback value rather than a firmware image.
 
+### 8.1 New vendor command: `0x2000012f`
+
+The earlier statement "no `0x200002xx` vendor command in the driver" remains
+true, but the search range was too narrow. A full scan for `0x2000xxxx`
+immediates found **`0x2000012f`** twice, both in code:
+
+* `FUN_00003904` (driver init) selects the firmware-update-start command by
+  TPM detection: success from `FUN_000047ac` → `0x2000012f`; otherwise
+  `0x129` (`HierarchyChangeAuth`) or `0x12f` (`FieldUpgradeStart`).
+* The `SetImage` backend at `0x4cc8` passes the same value into
+  `FUN_00007b38` / `FUN_00003134`, which build a policy session restricted to
+  that command via `PolicyCommandCode` (CC `0x16C`).
+
+So `0x2000012f` is the **vendor counterpart of standard `FieldUpgradeStart`
+(`0x12f`)**, used when the driver detects this platform's TPM. It is a
+state-changing update-start command — it has not been probed live.
+
+Associated detection/state:
+
+* `FUN_000047ac` reads a TPM capability/property and compares a magic value
+  (`0x584649` = ASCII `IFX` in little-endian order) to choose vendor vs.
+  standard command; it can also read TPM MMIO at `0xfed40f00`.
+* `FUN_000035fc` runs `TpmFmpUefiDrv_data_hash_check` with the chosen command
+  code, then stores the resulting 16-byte value in the `TpmFwUpdRollNonce`
+  UEFI variable (GUID `f7486a10-4927-0dd3-92d8-7ca3e19ea6b3`). Note this is
+  the policy/anti-rollback nonce, distinct from the `NovemberRain` auth seed.
+
 ---
 
 ## 9. Open questions
@@ -405,6 +432,8 @@ an authorization/anti-rollback value rather than a firmware image.
    Live confirmation pending after TPM recovery.
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
+   §8.1 adds `0x2000012f`, statically identified as a vendor
+   `FieldUpgradeStart`; it is state-changing and unprobed.
 3. Where does the TPM get its firmware? The working assumption is on-die
    flash in the NPCT75x package with no public read-back command. §7 now
    rules out the BIOS FMP driver as a source — it only reports the version.
