@@ -278,6 +278,28 @@ wedged by a separate `0x20000202` probe — see `HYPOTHESES.csv`). Re-test by
 passing the 32-byte digest as `TPM_RS_PW` to NV_Read `0x01802006` after a
 platform reset.
 
+### 6.1 Non-reboot recovery attempts (2026-11-19)
+
+With explicit authorization to reset the TPM but not reboot the platform:
+
+* `/dev/tpm*` is absent. `tpm_tis` is **built into the kernel**
+  (`CONFIG_TCG_TIS=y`), so `modprobe -r tpm_tis` reports "Module tpm_tis is
+  builtin" and there is no module to reload.
+* A sysfs rebind (`echo MSFT0101:00 > /sys/bus/platform/drivers/tpm_tis/bind`)
+  fails with `EIO`; the probe returns `-ENODEV` because the silicon never
+  answers. No new TPM lines appear in `dmesg`.
+* S3 suspend/resume (RTC-alarm wake, `mem_sleep = s2idle [deep]`) completed
+  cleanly but created no TPM device; a post-resume bind failed the same way.
+* TPM MMIO at `0xfed40000` still reads `ffffffff` for `ACCESS` (`+0x00`),
+  `STS` (`+0x18`) and `DID_VID` (`+0xf00`).
+* The DSDT exposes `\_SB_.TPM_._DSM` with a PPI-style function 2 that forwards
+  an operation byte through an SMI, and function 4 returning `TRST=2`. PPI
+  operations are applied at the next platform boot, and guessing the op code
+  could select "TPM Clear", so it was not invoked.
+
+Conclusion: the wedge cannot be cleared without a platform-level reset. A
+full reboot is the remaining path to live validation.
+
 ---
 
 ## 7. AMI TPM FMP driver — structure (from Ghidra)
