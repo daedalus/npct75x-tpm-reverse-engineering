@@ -273,10 +273,10 @@ SHA256( UTF-16LE("NovemberRain") || 00 00 )
 `0x5c`) with this digest as the HMAC key, used to authorize the NV_Read of the
 version payload. This explains why every empty/common-password attempt failed.
 
-**Status**: statically proven; live confirmation still pending (the TPM was
-wedged by a separate `0x20000202` probe — see `HYPOTHESES.csv`). Re-test by
-passing the 32-byte digest as `TPM_RS_PW` to NV_Read `0x01802006` after a
-platform reset.
+**Status**: statically proven **and live-confirmed on 2026-11-19**. After the
+TPM hardware was restored, `NV_Read 0x01802006` with the 32-byte digest as
+`TPM_RS_PW` succeeded and returned 16 bytes (`00` × 16); an empty password in
+the same session still returned `0x9A2 BAD_AUTH`. This closes open question 0.
 
 ### 6.1 Non-reboot recovery attempts (2026-11-19)
 
@@ -308,10 +308,12 @@ UEFI TPM configuration variables (`TpmServFlags`, `OldTPM20FlagData`,
 firmware is disabling the device because the silicon never answers, not
 because a setting changed.
 
-Conclusion: the `0x20000202` probe with 16 zero-byte parameters permanently
-wedged this NPCT75x. No software-level or platform-level reset short of
-hardware replacement recovers it. Live validation of the NV auth is no
-longer possible on this machine.
+Conclusion at the time: the `0x20000202` probe with 16 zero-byte parameters
+appeared to wedge this NPCT75x permanently; no software-level or
+platform-level reset recovered it. **Update:** the TPM hardware was later
+restored externally (2026-11-19), `/dev/tpm0` and the `MSFT0101:00` device
+returned, and the NV auth was successfully validated live (see above). The
+recovery attempts above remain recorded as failed on that occasion.
 
 ---
 
@@ -485,11 +487,10 @@ Associated detection/state:
 
 ## 9. Open questions
 
-0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6:
-   `SHA256(UTF-16LE("NovemberRain\0"))` = `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
-   Live confirmation is impossible on this machine: the TPM was
-   permanently wedged by the `0x20000202` probe and does not recover after
-   S3, a warm reboot, or a cold power cycle (see §6.1).
+0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
+   confirmed live: `SHA256(UTF-16LE("NovemberRain\0"))` =
+   `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
+   `NV_Read` with this auth returns 16 bytes; empty password returns BAD_AUTH.
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
    §8.1 adds `0x2000012f`, statically identified as a vendor

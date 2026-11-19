@@ -6,8 +6,10 @@ variable, hashes them with SHA-256 and passes the 32-byte digest as the
 ``authValue`` to ``NV_DefineSpace``.  ``TpmFmpUefiDrv_version_payload`` then
 uses an HMAC-SHA256 session keyed by the same digest to read the index.
 
-The value is proven statically; live validation is deferred because the TPM
-is wedged.  See ``knowledge/NPCT75x.md`` sections 6 and 8.
+The value was proven statically and then confirmed live on 2026-11-19:
+``NV_Read 0x01802006`` with this digest as ``TPM_RS_PW`` returned 16 bytes,
+while an empty password still returns ``BAD_AUTH``.  See
+``knowledge/NPCT75x.md`` sections 6 and 8.
 """
 
 from __future__ import annotations

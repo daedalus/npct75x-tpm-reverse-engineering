@@ -7,21 +7,19 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 ## Current status (2026-11-19)
 
 * Offline suite: **91 tests pass** (`python3 -m pytest tests/ -q`).
-* NV `0x01802006` auth is **statically derived** from the AMI FMP DXE driver:
+* NV `0x01802006` auth is **statically derived and live-confirmed**:
   `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
-  [`tpm_re/nvauth.py`](tpm_re/nvauth.py). Live validation is **no longer
-  possible on this machine**: a `0x20000202` probe with 16 zero bytes wedged
-  the NPCT75x, and S3, a warm reboot and a cold power cycle all failed to
-  recover it (see `knowledge/NPCT75x.md` §6.1).
+  [`tpm_re/nvauth.py`](tpm_re/nvauth.py). `NV_Read` with this auth returns 16
+  bytes; an empty password returns `BAD_AUTH`. The TPM was temporarily
+  wedged by a `0x20000202` probe but the hardware was later restored.
 * The BIOS image contains **AMD fTPM**, not NPCT75x firmware. The AMI FMP
   driver is a version-reporting/capsule-dispatch shim; its `SetImage` path and
   the `AMI ` capsule layout are decoded in section 7.1 of the knowledge file.
 * `python3 -m tpm_re ami FILE --extract FW.bin` parses such a capsule offline.
 * Vendor command `0x2000012f` is statically identified as a Nuvoton variant of
   `FieldUpgradeStart`; it is state-changing and has not been probed live.
-* The TPM is currently dead at the hardware level: no `/dev/tpm*`, no `TPM2`
-  ACPI table, `_SB_.TPM_` enumerated as disabled `PNP0C31:00`, MMIO reads
-  `ffffffff`. All further work is offline.
+* The TPM is operational again (`/dev/tpm0`, `MSFT0101:00`); the recovery
+  attempts that failed earlier are recorded in `knowledge/NPCT75x.md` §6.1.
 
 ## Safety model
 
