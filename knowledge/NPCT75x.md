@@ -238,8 +238,53 @@ is the working path for the vendor property space.
 
 ---
 
-## 6. Open questions
+## 6. AMI TPM FMP driver — NV `0x01802006` auth value (from Ghidra)
 
+**Derived (statically proven)** from the AMI TPM Firmware Management driver
+loaded in Ghidra as `section1.pe` (`TpmFmpUefiDrv_*` functions). This DXE driver
+is what *creates* NV index `0x01802006` on this platform, so its code is
+authoritative for the index auth value that live probing could not recover.
+
+The chain in `TpmFmpUefiDrv_nv_init`:
+
+1. `gBS->CopyMem` copies 26 bytes (`0x1a`) from `u_NovemberRain_000093a8`
+   (`0x93a8`) into a local buffer. Those bytes are **UTF-16LE
+   `"NovemberRain\0"`**: `4e006f00760065006d006200650072005200610069006e000000`.
+   (`NovemberRain` is the UEFI variable name; there are also
+   `TpmFwUpdMode` and `TpmFwUpdRollNonce` variables nearby.)
+2. It enumerates NV indices (`FUN_00007020`) and, for `0x1802006`, calls
+   `TpmFmpUefiDrv_version_payload(puVar3, local_858, 0x1a, ...)`.
+3. When defining the index it calls `FUN_00008674(1, &buf, &len, out)` — a
+   plain **SHA-256** (the standard IV `6a09e667 bb67ae85 3c6ef372 a54ff53a
+   510e527f 9b05688c 1f83d9ab 5be0cd19` is visible in the function) over the
+   26-byte buffer, producing a 32-byte digest.
+4. That 32-byte digest is used as the `authValue` in `NV_DefineSpace`
+   (`TpmFmpUefiDrv_nv_init_data`, attrs `0x42050005`, nameAlg `0xb`=SHA256,
+   index `0x1802006`). Confirmed in x86-64 disassembly at `0x3571–0x35ae`.
+
+Therefore the **NV `0x01802006` auth value** is:
+
+```
+SHA256( UTF-16LE("NovemberRain") || 00 00 )
+= 4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf
+```
+
+`FUN_0000630c` / `FUN_00005a6c` implement **HMAC-SHA256** (ipad `0x36`, opad
+`0x5c`) with this digest as the HMAC key, used to authorize the NV_Read of the
+version payload. This explains why every empty/common-password attempt failed.
+
+**Status**: statically proven; live confirmation still pending (the TPM was
+wedged by a separate `0x20000202` probe — see `HYPOTHESES.csv`). Re-test by
+passing the 32-byte digest as `TPM_RS_PW` to NV_Read `0x01802006` after a
+platform reset.
+
+---
+
+## 7. Open questions
+
+0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6:
+   `SHA256(UTF-16LE("NovemberRain\0"))` = `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
+   Live confirmation pending after TPM recovery.
 1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
 3. Where does the TPM get its firmware? The working assumption is on-die
