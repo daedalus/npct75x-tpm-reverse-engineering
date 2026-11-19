@@ -417,6 +417,31 @@ def cmd_fmp(args) -> int:
     return 0
 
 
+def cmd_ami(args) -> int:
+    data = Path(args.input).read_bytes()
+    caps = firmware.scan_ami_capsules(data)
+    if args.json:
+        _json_print([c.to_dict() for c in caps])
+        return 0
+    print(f"{args.input} ({len(data)} bytes): {len(caps)} AMI capsule(s)")
+    for cap in caps:
+        print(f"  +0x{cap.offset:08X} version=0x{cap.version:08X} "
+              f"lowest=0x{cap.lowest_supported_version:08X}")
+        for sec in cap.sections:
+            print(f"      type={sec.section_type} size={sec.size} "
+                  f"@0x{sec.data_offset:08X}")
+    if args.extract:
+        out = Path(args.extract)
+        for i, cap in enumerate(caps):
+            sec = cap.firmware_section
+            if sec is None:
+                continue
+            dest = out if len(caps) == 1 else out.with_name(f"{out.name}.{i}")
+            dest.write_bytes(data[sec.data_offset:sec.data_offset + sec.size])
+            print(f"  wrote firmware section to {dest}")
+    return 0
+
+
 def cmd_sigrok(args) -> int:
     out, written, used = sigrok.convert(
         Path(args.input), out_path=Path(args.out) if args.out else None,
@@ -727,6 +752,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("input")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_fmp)
+
+    p = sub.add_parser("ami", help="scan for AMI TPM FMP capsule images")
+    p.add_argument("input")
+    p.add_argument("--extract", metavar="FILE",
+                   help="write the type-2 firmware section(s) to FILE")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_ami)
 
     p = sub.add_parser("sigrok", help="convert sigrok SPI annotations to a byte stream")
     p.add_argument("input")

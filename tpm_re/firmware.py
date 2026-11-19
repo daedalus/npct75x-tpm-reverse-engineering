@@ -10,8 +10,12 @@ This module folds in two standalone helpers that used to live under
   Protocol (FMP) capsules and the ``TPM FMP H`` marker, and report any
   Nuvoton/NPCT strings inside each capsule image.  (was
   ``tools/find_fmp.py`` and ``tools/opencode/parse_fmp.py``)
+* ``scan_ami_capsules`` — parse the ``AMI `` TPM FMP capsule *payload* format
+  decoded from the AMI DXE driver; this is what a Nuvoton/Lenovo update
+  package would carry.
 
-Both operate on files the caller names: no path is ever hard-coded.
+All file-based helpers operate on paths the caller names: no path is ever
+hard-coded.
 """
 
 from __future__ import annotations
@@ -229,3 +233,124 @@ def scan_fmp(path: Path) -> FmpReport:
             if capsule is not None:
                 report.capsules.append(capsule)
     return report
+
+
+# --------------------------------------------------------------------------
+# AMI TPM FMP capsule image (decoded from section1.pe, see knowledge/NPCT75x.md
+# section 7.1).  This is the *payload* inside an FMP capsule, not the UEFI
+# capsule wrapper.  The DXE's CheckImage/SetImage require the "AMI " magic at
+# image offset 0 and a section table containing both a type-1 (version) and a
+# type-2 (firmware) section.
+# --------------------------------------------------------------------------
+
+AMI_MAGIC = b"AMI "
+AMI_SECTION_VERSION = 1
+AMI_SECTION_FIRMWARE = 2
+_AMI_SECTION_SIZE = 16
+_AMI_MAX_SECTIONS = 1024
+
+
+@dataclass
+class AmiSection:
+    """One 16-byte section descriptor inside an AMI TPM FMP capsule."""
+
+    offset: int          # relative to the section table base
+    section_type: int
+    size: int
+    data_offset: int     # absolute offset in the scanned buffer
+
+    def to_dict(self) -> dict:
+        return {
+            "offset": f"0x{self.offset:08X}",
+            "data_offset": f"0x{self.data_offset:08X}",
+            "type": self.section_type,
+            "size": self.size,
+        }
+
+
+@dataclass
+class AmiCapsule:
+    offset: int                    # absolute offset of the "AMI " magic
+    version: int                   # u32 at +0x10, stored to TpmFmpVersion
+    lowest_supported_version: int  # u32 at +0x14
+    section_table_offset: int      # u32 at +0x04, relative to this capsule
+    sections: list[AmiSection] = field(default_factory=list)
+
+    @property
+    def has_firmware(self) -> bool:
+        return any(s.section_type == AMI_SECTION_FIRMWARE and s.size
+                   for s in self.sections)
+
+    @property
+    def firmware_section(self) -> AmiSection | None:
+        return next((s for s in self.sections
+                     if s.section_type == AMI_SECTION_FIRMWARE and s.size),
+                    None)
+
+    def to_dict(self) -> dict:
+        return {
+            "offset": f"0x{self.offset:08X}",
+            "version": f"0x{self.version:08X}",
+            "lowest_supported_version": f"0x{self.lowest_supported_version:08X}",
+            "section_table_offset": f"0x{self.section_table_offset:08X}",
+            "has_firmware": self.has_firmware,
+            "sections": [s.to_dict() for s in self.sections],
+        }
+
+
+def _parse_ami_capsule(data: bytes, pos: int) -> AmiCapsule | None:
+    """Parse one ``AMI `` capsule at *pos*, or return None if malformed."""
+    if pos + 0x18 > len(data) or data[pos:pos + 4] != AMI_MAGIC:
+        return None
+    table_rel = struct.unpack_from("<I", data, pos + 4)[0]
+    version = struct.unpack_from("<I", data, pos + 0x10)[0]
+    lowest = struct.unpack_from("<I", data, pos + 0x14)[0]
+
+    # Fixed header is 0x18 bytes; the table has a 4-byte count followed by
+    # 12 reserved bytes, then 16-byte descriptors.
+    if table_rel < 0x18:
+        return None
+    table = pos + table_rel
+    if table + 4 > len(data):
+        return None
+    count = struct.unpack_from("<I", data, table)[0]
+    if not 0 < count <= _AMI_MAX_SECTIONS:
+        return None
+    desc_start = table + 0x10
+    if desc_start + count * _AMI_SECTION_SIZE > len(data):
+        return None
+
+    sections: list[AmiSection] = []
+    for i in range(count):
+        desc = desc_start + i * _AMI_SECTION_SIZE
+        sec_off, sec_type, sec_size = struct.unpack_from("<QII", data, desc)
+        data_off = table + sec_off
+        if sec_off and not (table <= data_off <= len(data)):
+            return None
+        if sec_size and data_off + sec_size > len(data):
+            return None
+        sections.append(AmiSection(offset=sec_off, section_type=sec_type,
+                                   size=sec_size, data_offset=data_off))
+
+    # SetImage bails out unless it found one section of each required type.
+    have = {s.section_type for s in sections}
+    if AMI_SECTION_VERSION not in have or AMI_SECTION_FIRMWARE not in have:
+        return None
+    return AmiCapsule(offset=pos, version=version,
+                      lowest_supported_version=lowest,
+                      section_table_offset=table_rel, sections=sections)
+
+
+def scan_ami_capsules(data: bytes) -> list[AmiCapsule]:
+    """Scan a buffer for structurally valid AMI TPM FMP capsule images."""
+    found: list[AmiCapsule] = []
+    start = 0
+    while True:
+        pos = data.find(AMI_MAGIC, start)
+        if pos == -1:
+            break
+        start = pos + 1
+        cap = _parse_ami_capsule(data, pos)
+        if cap is not None:
+            found.append(cap)
+    return found

@@ -369,6 +369,12 @@ So the mechanism to flash a TPM firmware capsule is present; only the capsule
 itself is missing. A Lenovo/Nuvoton TPM firmware update package would supply
 it, and its sections can be parsed with the layout above.
 
+That layout is implemented offline as `tpm_re.firmware.scan_ami_capsules()`
+and the `python3 -m tpm_re ami FILE [--extract FW.bin] [--json]` command. It
+validates the `AMI ` magic, the section-table bounds and the presence of both
+required section types, and can carve the type-2 firmware payload. A scan of
+`IMAGEM47.ROM` finds zero `AMI ` magic occurrences, as expected.
+
 ---
 
 ## 8. NV `0x01802006` access chain — standard TPM commands only
