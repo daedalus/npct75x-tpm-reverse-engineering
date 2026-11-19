@@ -340,6 +340,16 @@ Consequences:
   `TPMPERBIOSFLAGS`). None of the driver's own variables (`NovemberRain`,
   `TpmFwUpdMode`, `TpmFwUpdRollNonce`, `TpmFmp*`) are present — consistent
   with those being runtime-only.
+* `TpmFwUpdMode` is managed by two small functions using variable GUID
+  `ed292d58-1ed2-422f-b685-7bce8c69edf2` (dwords `ed292d58`, `422f1ed2`,
+  `ce7b85b6`, `f2ed698c`, built on the stack so it is not a contiguous
+  constant in either the PE or the ROM). `FUN_00002be4` deletes it at driver
+  init via `SetVariable(name, guid, 0, 0, 0)`. `FUN_00002c30` reads it with
+  `GetVariable`, deletes any stale value, then zeroes 17 bytes with
+  `FUN_00000320` (a `memset` helper) and writes them back with attributes `3`
+  (NV|BS). A present variable is therefore an "update mode active" flag;
+  absence means normal operation. The GUID occurs in neither the ROM nor the
+  runtime efivars.
 
 ### 7.1 FMP capsule format and update backends
 
