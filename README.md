@@ -191,6 +191,26 @@ It refuses to suspend if the platform device is no longer bound (S3 cannot
 help then) or if the RTC alarm cannot be verified, and it never sends a
 write/commit, touches PPI, or reboots. See `knowledge/NPCT75x.md` §10.15.
 
+### Probing FUM setup authorisation
+
+`tools/fum_probe.py` consolidates the one-off `opencode/fum_*.py` scripts. It
+sends only the vendor setup command `0x20000200` with the PLATFORM handle
+`0x4000000C` and a password session, checks the read-only `0x20000213`
+baseline before and after, and can never emit a write/commit:
+
+```sh
+python3 tools/fum_probe.py --check-only         # health baseline only
+python3 tools/fum_probe.py --list-candidates    # show candidate auths, no TPM
+python3 tools/fum_probe.py                      # all candidates, setup only
+python3 tools/fum_probe.py --candidate nvauth_32 --json
+```
+
+The helper `tpm_re/fum.py` builds the command with the correct **u16 TPM2B**
+length prefixes. The original one-off scripts used a u32 prefix, which made
+the TPM misparse the auth area and return a misleading `0xA84 VALUE (session
+2)`; the correct verdict for a wrong PLATFORM auth is `0x9A2 BAD_AUTH`. See
+`knowledge/NPCT75x.md` §9.19.
+
 `vendor-probe` refuses to send anything without `--allow-vendor`. The NV
 password and brute-force paths refuse without `--allow-da`, because every
 failed auth on an index lacking `TPMA_NV_NO_DA` increments the
@@ -261,11 +281,18 @@ single `tpm-re` CLI:
 | `knowledge/tools/scan_kcore.py` | `tpm-re kcore` (module `tpm_re/hostmem.py`) |
 | `tpm2_acpi.py` | already covered by `tpm-re acpi` (removed) |
 | `opencode/probe_*`, `test_auth.py`, `sample_vendor_prop.py`, … | `tpm-re vendor-probe`, `vendor --sample`, `nv --password/--bruteforce` (module `tpm_re/vendor_probe.py`) |
+| `opencode/fum_*.py` (setup, handles, reads, auth, hmac, rawpw, nonce) | `tools/fum_probe.py` (module `tpm_re/fum.py`) |
+| `opencode/analyze_devcap.py`, `extract_fw*.py`, `walk_payload.py` | `tpm-re fmp` / `tpm_re.firmware.scan_devcap_script` + `tools/fw_*.py` |
+| `opencode/attack*.py`, `iv_derive.py`, `ctr_iv.py`, `known_plaintext_attack.py` | `tools/fw_crypto_harness.py`, `tools/fw_deep_analysis.py` |
 
 The experiment scripts had hard-coded paths and sent undocumented vendor
 commands and brute-forced NV auth inline; the folded-in versions take their
 targets as arguments and sit behind the `--allow-vendor` / `--allow-da` gates
-described above. There are no standalone scripts left to run.
+described above. The retained `opencode/` directory is scratch evidence, not
+tooling. Scripts deliberately **not** ported include `sel_sweep.py` (its
+1-byte selector sweep wedged the TPM — §10.15), `read_sweep.py`, and the
+`append_hyp*.py` / `update_hyp5.py` HYPOTHESES.csv mutators (that file is a
+frozen 151-row audit trail). `tools/fum_probe.py` is the only live FUM tool.
 
 ## Roadmap
 
