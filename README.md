@@ -18,11 +18,13 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 * `python3 -m tpm_re ami FILE --extract FW.bin` parses such a capsule offline.
 * Vendor command `0x2000012f` is statically identified as a Nuvoton variant of
   `FieldUpgradeStart`; it is state-changing and has not been probed live.
-* **The TPM is wedged again (2026-11-20).** Authorized live FUM probing
-  confirmed CC `0x20000200` needs an unknown PLATFORM authValue and a blind
-  1-byte selector sweep on `0x20000214` wedged the chip. Writes to `/dev/tpm*`
-  return `EINVAL`, reads time out. No write/commit/reboot was sent; external
-  hardware restoration is again required. See `knowledge/NPCT75x.md` §10.15.
+* **TPM recovered via S3 (2026-11-20).** Authorized live FUM probing confirmed
+  CC `0x20000200` needs an unknown PLATFORM authValue, and a blind 1-byte
+  selector sweep on `0x20000214` wedged the chip (writes `EINVAL`, reads timed
+  out). One S3 suspend/resume cycle restored it fully — vendor queries,
+  `tpm2_*` tools and the NV `0x01802006` auth read all work again. No
+  write/commit/reboot was sent. An S3 cycle is a valid non-reboot recovery when
+  the platform device is still bound. See `knowledge/NPCT75x.md` §10.15.
 * A public Lenovo Nuvoton firmware package was fetched with provenance. Its
   `NuvotonTpmDevCap.BIN` uses a **DevCap** container (not `AMI `) holding a
   257-command vendor replay script; `0x20000200/201/202/203` are
@@ -171,6 +173,23 @@ python3 -m tpm_re vendor --sample 0x1 --count 10 --interval 1
 python3 -m tpm_re nv --index 0x01802006 --password deadbeef --allow-da
 python3 -m tpm_re nv --index 0x01802006 --bruteforce wordlist.txt --allow-da
 ```
+
+### Recovering a wedged TPM
+
+`tools/tpm_recover.py` encodes the one non-reboot recovery that worked
+(§10.15). It probes three read-only vendor commands against their live
+baseline, and if the chip is wedged it arms an RTC wakealarm and performs a
+single S3 suspend/resume before probing again:
+
+```sh
+python3 tools/tpm_recover.py --check-only          # health probe only, no root
+sudo python3 tools/tpm_recover.py                  # probe, then S3 if wedged
+sudo python3 tools/tpm_recover.py --force --dry-run  # show steps, do not suspend
+```
+
+It refuses to suspend if the platform device is no longer bound (S3 cannot
+help then) or if the RTC alarm cannot be verified, and it never sends a
+write/commit, touches PPI, or reboots. See `knowledge/NPCT75x.md` §10.15.
 
 `vendor-probe` refuses to send anything without `--allow-vendor`. The NV
 password and brute-force paths refuse without `--allow-da`, because every

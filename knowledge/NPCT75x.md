@@ -1141,9 +1141,23 @@ experiments used CC `0x20000200` (setup) or the read-only vendor commands.
 This is the same wedge signature as §6.1. No reboot or power cycle was
 attempted in this phase (no authorization). The previous incident recovered
 only through **external hardware restoration** — warm reboot and cold power
-cycle both failed — so that is again the expected requirement. The live FUM
+cycle both failed — so that was expected to be required again. The live FUM
 path is closed twice over: setup is gated by an unknown PLATFORM authValue and
 §10.1 establishes there is no firmware read-back command even inside FUM.
+
+**Recovery by S3 suspend/resume (2026-11-20).** Unlike the first incident,
+`/dev/tpm0` and the `MSFT0101:00` device were still present while wedged, so
+the driver's resume path could be exercised. A single S3 cycle
+(`mem`/`deep`, RTC alarm armed via `/sys/class/rtc/rtc0/wakealarm`, though an
+unknown source woke the box after ~8 s) fully recovered the chip: writes stop
+returning `EINVAL`, `0x20000213` again returns
+`ffffa700fbff7ffffbfffffffbf0ffffaaaa`, `0x20000204`/`0x20000216` return their
+baseline values, `tpm2_getcap` and `tpm2_gettestresult` work, and `NV_Read` with
+the NovemberRain auth returns the 16-byte index. **An S3 cycle is therefore a
+valid non-reboot recovery for a wedged NPCT75x when the platform device is
+still bound** — the earlier S3 attempt failed only because the device had
+already disappeared. `/dev/mem` MMIO poking remains blocked by
+`CONFIG_STRICT_DEVMEM`, and PPI `transition_action` is `2: Reboot`.
 
 ---
 
