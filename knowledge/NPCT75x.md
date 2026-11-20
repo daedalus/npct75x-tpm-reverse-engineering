@@ -1448,6 +1448,52 @@ key material exists in any BIOS segment; the second driver re-derives the same
 runtime policy. Offline auth recovery remains closed; no live action is
 authorized.
 
+### 9.17 Full extraction of `_FV2_main.bin.extracted/` (2026-11-20)
+
+Continued recursive extraction of all 30 files in
+`/tmp/opencode/bios/seg_extract/FV2_main/_FV2_main.bin.extracted/`. Result:
+**no new key-bearing artifact**; every remaining file is accounted for.
+
+* The `*.7z` siblings are raw LZMA-alone streams (binwalk output). `7z x -so`
+  confirms each decompresses byte-for-byte to its plain-named partner (e.g.
+  `1095F8.7z` → `1095F8`, 47,810 B), so those plain files are already the
+  decoded output — not a further compression layer.
+* `1095F8`, `10A2D8`, `108C38`, `106780`, `13360`, `10AC68`, `10BF60`,
+  `10DD30`, `10F0E8`, `1094E0` are **AMI-wrapped BMP bitmaps** (BIOS splash /
+  logo images), not compressed firmware modules. Each has a 4-byte AMI
+  wrapper (`u24 size` + `0x19`) followed by the `42 4d` = `BM` BMP signature
+  at offset 4; binwalk identifies e.g. `1095F8` as a 125×127×24 PC bitmap and
+  `106780` as a 768×432×32 bitmap. Their low-entropy repeated-byte patterns
+  are bitmap pixel data. `1094E0` additionally carries an `IMA` palette
+  chunk. No TPM/crypto content.
+* `34330` is a small UEFI FV with five PE images (AmdS3Lib / S3 table code),
+  e.g. "AmdS3Lib table Signature check fail". No TPM content.
+* `13360` holds two nested LZMA streams at `0x43B09` (4,864 B) and `0x4EB70`
+  (3,328 B), recovered with `binwalk -e`. Both expand to opaque binary with no
+  strings, PE/FV headers, or signatures — not key material.
+* **`3E770` AES S-boxes are TLS, not TPM.** The reported tables
+  `0x1EBE6C` (inverse S-box, starts `52 09 6a d5 …`) and `0x1EC08C`
+  (S-box, starts `63 7c 77 7b …`) are standard AES tables. They live in the
+  PE at file offset `0x8A11C` whose FFS GUID immediately before `MZ` is
+  `3aceb0c0-3c72-11e4-9a56-74d435052646` — the EDK2 `NetworkPkg/TlsDxe`
+  driver (confirmed against upstream `.inf`). RIP-relative xrefs from `.text`
+  at `0x1287C1…0x128ACB` (AES decrypt) and `0x13155C…0x131756` (key
+  expansion / encrypt), plus the GHASH reduction constant
+  `0xE100000000000000` at `0x128C1B`, confirm OpenSSL AES-GCM used for TLS
+  records. No TPM / Nuvoton / NovemberRain strings occur anywhere in `3E770`;
+  all `policy` strings are X.509 certificate-policy names. This is generic
+  UEFI network-stack crypto and is unrelated to NPCT75x firmware decryption.
+* `111028` contains seven AES S-box instances; they map to BIOS setup/HII
+  code, an OpenSSL `CryptoPkg` library, and AMI `RegisterPasswordUpdateProtocolNotify`
+  DXE/SMM modules — none TPM firmware-update related.
+* A byte-level scan of every extracted file for `NovemberRain`, `Nuvoton`,
+  `NPCT75`, `TpmFwUpd`, `RollNonce`, `HierarchyChangeAuth` and all five known
+  GUIDs (ASCII and UTF-16LE) matched **only** `PE_3217d4`, `PE_712c64`, and
+  their parent `111028` — the two drivers already fully analysed in §9.16.
+
+**Net effect:** offline key/auth recovery remains closed. No live action is
+authorized.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
