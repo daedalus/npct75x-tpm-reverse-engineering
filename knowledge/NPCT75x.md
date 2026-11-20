@@ -1390,6 +1390,64 @@ No TPM, Nuvoton, policy-auth, or key material. The `section1.pe`
 `TpmFmpUefiDrv` remains the correct Ghidra program for the auth work; the
 `FV2_main.bin` renames above are local Ghidra-database changes only.
 
+### 9.16 binwalk LZMA extraction of the BIOS segments (2026-11-20)
+
+**Correction to earlier scope:** the M47KT41A ROM contains the TPM driver, but
+only inside **LZMA-compressed** nested firmware volumes. The earlier string
+sweeps that found no `Nuvoton`/`NovemberRain`/`PlatformAuth` used raw bytes and
+zlib only; they did not decompress LZMA. `binwalk -e` on the carved segments in
+`/tmp/opencode/bios/segments/` extracts the compressed members into
+`/tmp/opencode/bios/seg_extract/<segment>/<segment>.extracted/`.
+
+The relevant extracted members:
+
+| member | size | content |
+|---|---|---|
+| `FV2_main/…/111028` | 13,963,280 B | decompressed UEFI FV (`8C8CE578-…`) containing the AMI TPM FMP driver plus a Lenovo `LDEVFWUPD` driver |
+| `FV2_main/…/3E770` | 2,531,344 B | AMD fTPM material (`0314dde5` protocol GUID, no NovemberRain/TpmFmp) |
+| `FV2_main/…/F2648` | 278,544 B | TPM **vendor-ID string table** only (`AMD … NUVOTON … WINBOND`, `TPM 1.2`/`TPM 2.0`) |
+| `FV6_2mb/…/2100` | 4,194,336 B | AMD PSP/fTPM PEI strings; not Nuvoton |
+
+Two PE images inside `111028` reference `NovemberRain`/`TpmFwUpdRollNonce`:
+
+* `PE_3217d4` — SHA-256 `9ce07f4188c125105b7ec6ec167ed98129c1a49edc3fd399920232624d8232b5`,
+  44,480 B. `.text` is **byte-identical** to `~/section1.pe`
+  (SHA-256 `8940d5aea6834217c478f16be10604946120796323f1fc8bfe16f11039aeca6a`);
+  only 5 bytes differ, at `0x8c90–0x8c96` in `.data` (build metadata). This is
+  the same `TpmFmpUefiDrv` already decompiled in Ghidra — no new logic.
+* `PE_712c64` — SHA-256 `ec3406baa6097562ac17650a7c61a57e6f211be1ec5ef070b396b9ee1982b8f3`,
+  53,280 B. A different, larger Lenovo `LDEVFWUPD` (device firmware-update)
+  driver. Disassembly (capstone) of its `.text` shows a **second, independent
+  implementation of the same platform-auth flow**:
+  * `0x6158` reads the 16-byte `TpmFwUpdRollNonce` variable (GUID built on stack
+    at `0x6182–0x619d` as `106a48f7-d30d-2749-a37c-d892b3a69ee1`), opens a
+    **policy** session (`cl=1` at `0x8565`), HMACs the nonce with UTF-16
+    `NovemberRain` (calls `0x8540` → `0x8588` → `0x8988`), then submits
+    `HierarchyChangeAuth` (`edx=0x129` at `0x6274`) via the generic TIS submit
+    primitive `0x5c28` (also used for `0x149`/`0x4c` commands).
+  * `0x6618` is a nonce-provisioning / digest-cache routine: `GetRandom`
+    (`0x9310` path), writes `TpmFwUpdRollNonce`, builds both protocol GUIDs
+    `0314dde5-…` (hash interface) and `ac61fe57-…` (cached-policy record),
+    then `LocateProtocol` (`[gBS+0x138]`) and reads the 32-byte cached digest
+    via `[iface+8]`/`[iface+0x98]`. This confirms the cached policy digest is
+    obtained through the AMI `0314dde5` protocol, which is why it was absent
+    from the 156 exported efivars.
+  * No nonce value, no authValue, and no manufacturing key are stored in the
+    driver; everything is regenerated at runtime from live TPM randomness.
+
+Also decoded from `111028`: a BIOS setup prompt at `0x228f84`
+("Enables or Disables **Platform Hierarchy randomization** … OVERRIDE
+ChangePlatformAuth ELINK for production platforms supporting TXT"). This is a
+development-only AMI setup option; it is consistent with the BIOS randomizing
+PLATFORM auth at boot, i.e. it explains *why* PLATFORM auth is non-empty, but
+it exposes no recoverable value.
+
+**Net effect:** the binwalk extraction changes the evidence base (the driver is
+present, compressed) but not the conclusion. No stored nonce, cached digest, or
+key material exists in any BIOS segment; the second driver re-derives the same
+runtime policy. Offline auth recovery remains closed; no live action is
+authorized.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
