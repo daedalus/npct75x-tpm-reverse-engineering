@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -442,6 +443,30 @@ def cmd_ami(args) -> int:
     return 0
 
 
+def cmd_devcap(args) -> int:
+    data = Path(args.input).read_bytes()
+    script = firmware.scan_devcap_script(data)
+    if script is None:
+        print(f"{args.input}: no valid Nuvoton DevCap script", file=sys.stderr)
+        return 1
+    if args.json:
+        _json_print(script.to_dict())
+        return 0
+    print(f"{args.input} ({len(data)} bytes): DevCap script at "
+          f"0x{script.script_offset:08X}, {len(script.commands)} commands")
+    for cmd in script.commands:
+        if args.commands or cmd.cc in (0x20000200, 0x20000201, 0x20000203):
+            print(f"  +0x{cmd.offset:08X} {cmd.name:22s} "
+                  f"cc=0x{cmd.cc:08X} size={cmd.size} params={len(cmd.params)}")
+    print(f"  firmware: {len(script.firmware)} bytes "
+          f"sha256={hashlib.sha256(script.firmware).hexdigest()}")
+    if args.extract:
+        out = Path(args.extract)
+        out.write_bytes(script.firmware)
+        print(f"  wrote firmware stream to {out}")
+    return 0
+
+
 def cmd_sigrok(args) -> int:
     out, written, used = sigrok.convert(
         Path(args.input), out_path=Path(args.out) if args.out else None,
@@ -759,6 +784,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="write the type-2 firmware section(s) to FILE")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_ami)
+
+    p = sub.add_parser("devcap",
+                       help="parse a Nuvoton DevCap vendor-command update script")
+    p.add_argument("input")
+    p.add_argument("--extract", metavar="FILE",
+                   help="write the 0x20000202 firmware data stream to FILE")
+    p.add_argument("--commands", action="store_true",
+                   help="list every command, not just setup/erase/commit")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_devcap)
 
     p = sub.add_parser("sigrok", help="convert sigrok SPI annotations to a byte stream")
     p.add_argument("input")

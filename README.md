@@ -6,7 +6,7 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 
 ## Current status (2026-11-19)
 
-* Offline suite: **91 tests pass** (`python3 -m pytest tests/ -q`).
+* Offline suite: **96 tests pass** (`python3 -m pytest tests/ -q`).
 * NV `0x01802006` auth is **statically derived and live-confirmed**:
   `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
   [`tpm_re/nvauth.py`](tpm_re/nvauth.py). `NV_Read` with this auth returns 16
@@ -20,9 +20,15 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   `FieldUpgradeStart`; it is state-changing and has not been probed live.
 * The TPM is operational again (`/dev/tpm0`, `MSFT0101:00`); the recovery
   attempts that failed earlier are recorded in `knowledge/NPCT75x.md` §6.1.
-* A public Lenovo Nuvoton firmware package was fetched with provenance; its
-  `NuvotonTpmDevCap.BIN` uses a **DevCap** container (not `AMI `) with a
-  ~240 KB encrypted/signed firmware payload. See `knowledge/NPCT75x.md` §7.2.
+* A public Lenovo Nuvoton firmware package was fetched with provenance. Its
+  `NuvotonTpmDevCap.BIN` uses a **DevCap** container (not `AMI `) holding a
+  257-command vendor replay script; `0x20000200/201/202/203` are
+  setup/erase/write/commit, and the 252 `0x20000202` chunks yield the
+  **232,840-byte NPCT75x 7.2.2.0 firmware stream** (SHA-256 `6659e5c5…2ca16`).
+  See `knowledge/NPCT75x.md` §7.2–7.3.
+* `python3 -m tpm_re devcap NuvotonTpmDevCap.BIN --extract FW.bin` parses this
+  script offline. The `0x20000202` wedge is explained: the probe sent 16 bytes
+  where the script always sends 942.
 
 ## Safety model
 

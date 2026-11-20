@@ -354,3 +354,117 @@ def scan_ami_capsules(data: bytes) -> list[AmiCapsule]:
         if cap is not None:
             found.append(cap)
     return found
+
+
+# Lenovo/Nuvoton "DevCap" firmware packages carry a UEFI boot-service driver
+# plus a contiguous replay script of pre-built TPM 2.0 vendor commands that
+# performs the firmware update.  Parsing is offline; no command is ever sent.
+DEVCAP_MAGIC = bytes.fromhex("911cc146aec301b03566677d")
+DEVCAP_CONTAINER_GUID = bytes.fromhex("139459944a5c674d99a86e9b2bb146a2")
+DEVCAP_DESCRIPTOR_SIZE = 0x20
+DEVCAP_TRAILER_SIZE = 0x100
+DEVCAP_WRITE_HEADER_LEN = 16
+DEVCAP_CC_NAMES = {
+    0x20000200: "setup",
+    0x20000201: "erase_ranges",
+    0x20000202: "write_firmware",
+    0x20000203: "commit",
+    0x20000204: "read_info_4",
+    0x20000211: "preconfig",
+    0x20000213: "read_firmware_state",
+    0x20000214: "read_info_14",
+    0x20000216: "read_info_16",
+}
+
+
+@dataclass
+class DevCapCommand:
+    """One pre-built TPM command in a DevCap update script."""
+
+    offset: int
+    tag: int
+    size: int
+    cc: int
+    params: bytes
+
+    @property
+    def name(self) -> str:
+        return DEVCAP_CC_NAMES.get(self.cc, f"VENDOR_0x{self.cc:08X}")
+
+    def to_dict(self) -> dict:
+        return {
+            "offset": self.offset,
+            "tag": f"0x{self.tag:04X}",
+            "size": self.size,
+            "cc": f"0x{self.cc:08X}",
+            "name": self.name,
+            "params_len": len(self.params),
+        }
+
+
+@dataclass
+class DevCapScript:
+    """A parsed DevCap container with its vendor-command replay script."""
+
+    descriptor_offset: int
+    script_offset: int
+    script_size: int
+    commands: list[DevCapCommand]
+    trailer: bytes
+
+    @property
+    def firmware(self) -> bytes:
+        """Concatenate the data portion of every ``0x20000202`` chunk."""
+        return b"".join(
+            cmd.params[DEVCAP_WRITE_HEADER_LEN:]
+            for cmd in self.commands
+            if cmd.cc == 0x20000202
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "descriptor_offset": self.descriptor_offset,
+            "script_offset": self.script_offset,
+            "script_size": self.script_size,
+            "trailer_sha256": hashlib.sha256(self.trailer).hexdigest(),
+            "commands": [c.to_dict() for c in self.commands],
+            "firmware_size": len(self.firmware),
+            "firmware_sha256": hashlib.sha256(self.firmware).hexdigest(),
+        }
+
+
+def scan_devcap_script(data: bytes) -> DevCapScript | None:
+    """Parse a DevCap container and its vendor-command replay script.
+
+    ``None`` is returned when the container GUID, descriptor magic, size field
+    or command walk do not validate.  The script ends exactly where the 256-byte
+    trailing signature region begins.
+    """
+    if len(data) < 0x120 or data[4:20] != DEVCAP_CONTAINER_GUID:
+        return None
+    desc = data.find(DEVCAP_MAGIC)
+    if desc < 0:
+        return None
+    script_start = desc + DEVCAP_DESCRIPTOR_SIZE
+    if script_start + 10 > len(data) - DEVCAP_TRAILER_SIZE:
+        return None
+    script_size = struct.unpack_from("<Q", data, desc + 0x10)[0]
+    script_end = script_start + script_size
+    if script_end != len(data) - DEVCAP_TRAILER_SIZE:
+        return None
+
+    commands: list[DevCapCommand] = []
+    pos = script_start
+    while pos < script_end:
+        if pos + 10 > script_end:
+            return None
+        tag, size = struct.unpack_from(">HI", data, pos)
+        if tag not in (0x8001, 0x8002) or size < 10 or pos + size > script_end:
+            return None
+        cc = struct.unpack_from(">I", data, pos + 6)[0]
+        commands.append(DevCapCommand(pos, tag, size, cc, data[pos + 10:pos + size]))
+        pos += size
+    if pos != script_end or not commands:
+        return None
+    return DevCapScript(desc, script_start, script_size, commands,
+                        data[script_end:])

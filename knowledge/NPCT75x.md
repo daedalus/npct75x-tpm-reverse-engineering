@@ -494,10 +494,45 @@ container**, not the `AMI ` capsule format:
 The Nuvoton readme states this package updates `TPM20_7.2.0.1`, `7.2.0.2` and
 `7.2.1.0` to `7.2.2.0`, and is intended for M75q-**1** (not our Gen 2). Our live
 TPM reports `TPM_PT_FIRMWARE_VERSION_1 = 0x00070002` (7.2), `VENDOR_STRING_1/2
-= "NPCT" / "75x"`, so the payload family is at least related, but the exact
-source version and decryption/verification path are not yet resolved. Crucially,
+= "NPCT" / "75x"`, so the payload family is at least related. Crucially,
 `python3 -m tpm_re ami` finds **zero** `AMI ` capsules in either DevCap BIN or
 the extracted UEFI driver, so the §7.1 parser does not apply here.
+
+### 7.3 The payload is a **replayable vendor-command script** — firmware extracted
+
+The region we initially called "high entropy" is not random at all: starting at
+file offset **`0x5820`** it is a contiguous sequence of **257 pre-built TPM
+2.0 commands**, each with a big-endian `tag|size|commandCode` header. Walking
+`size` from command to command consumes exactly `0x3A9D6` bytes and lands on
+`0x401F6`, the start of the 256-byte trailing signature/digest. This is the
+entire "encrypted" region — it is a **firmware update script**, and the vendor
+commands are now unambiguous:
+
+| # | command | size | params | meaning |
+|---|---|---|---|---|
+| 1 | `0x20000200` | 312 | 302 | **update setup**: version table (7.2.0.1, 7.2.0.2, 7.2.1.0 → 7.2.2.0), 16-byte digest `ba438def602ed63ef53c7dea2538`, target ranges `0x0008A000..0x000C0FFF` |
+| 2–4 | `0x20000201` | 18 | 8 | **erase/prepare flash ranges**: `0x0008A000..0x000A1FFF`, `0x000A2000..0x000B9FFF`, `0x000BA000..0x000C0FFF` (225,280 B total) |
+| 5–255 | `0x20000202` ×251 | 952 | 942 | **write firmware data**: fixed 16-byte header `0000001c 00000010 00000010 00000010` + 926 bytes of firmware |
+| 256 | `0x20000202` | 440 | 430 | final partial chunk: same header + 414 bytes |
+| 257 | `0x20000203` | 328 | 318 | **commit/finalize**: starts with version `02 00 07 02 02 00` (7.2.2.0), then per-block digests and a final 256-byte digest |
+
+The `0x20000202` data stream (concatenating the 926/414-byte payloads after
+each 16-byte header) is **232,840 bytes**, SHA-256
+`6659e5c55beb02bf55ecb818b7cb9288e59e7cd5e4ee6f0254f7e0b37b42ca16`, saved as
+`/tmp/opencode/fwpkg/npct75x_fw_7.2.2.0.bin`. It is still high-entropy, so it
+is the **encrypted/obfuscated firmware image as delivered to the TPM** — the
+TPM itself decrypts it during the update. We now have the exact byte stream,
+not just a container.
+
+This also explains the `0x20000202` wedge precisely: our probe sent **16 zero
+bytes**, while every legitimate call in this script sends **942 bytes** (or
+430 for the last chunk). The command is a raw flash write, so a short buffer
+left the firmware updater in an invalid state. **Never resend it.**
+
+The commit command `0x20000203` carries 318 bytes of per-block digest data;
+the final 256 bytes of the `0x20000200` setup params (offset 302) and the
+256-byte file trailer are the signature region. Neither has been verified
+against the extracted stream yet.
 
 ---
 
