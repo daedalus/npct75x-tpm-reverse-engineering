@@ -268,6 +268,7 @@ def capstone_disasm():
     optsz = struct.unpack_from("<H", pe, peoff + 20)[0]
     secbase = peoff + 24 + optsz
     md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.skipdata = True  # .text starts with a high-entropy non-code blob
     total = 0
     aesni = []
     for i in range(nsec):
@@ -281,7 +282,8 @@ def capstone_disasm():
             total += 1
             if any(x in ins.mnemonic for x in ("aes", "sha", "pclmul")):
                 aesni.append(f"{ins.mnemonic} {ins.op_str} @0x{ins.address:x}")
-        lines.append(f".text: {len(code)} bytes disassembly, {total} instructions")
+        lines.append(f".text: {len(code)} bytes, {total} decoded instructions "
+                     f"(skipdata enabled; first ~1.4KB is a non-code blob)")
     lines.append(f"AES-NI/SHA instructions: {len(aesni)}")
     for x in aesni[:15]:
         lines.append("  " + x)

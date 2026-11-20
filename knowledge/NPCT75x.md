@@ -954,9 +954,14 @@ algebraic result in §10.10.
   for random 2048-bit integers, not a key-structure signal.
 * `mmh3`/`xxhash`/`blake3`/`hashlib` and HMAC-SHA1/256/384, CRC32 and adler32
   over 15,676 keys: zero matches for any of the 513 ten-byte tags.
-* `capstone` disassembly of the embedded UEFI DXE driver's `.text`, and
-  `networkx` byte-transition graphs (63,432/63,680 of 65,536 possible edges,
-  one strongly connected component, balanced out-degrees 239–255).
+* `capstone` disassembly of the embedded UEFI DXE driver's `.text`: 5,752
+  decoded instructions with skipdata (the first ~1.4 KB is a high-entropy
+  non-code blob, then EDK2 assertion strings around 0x800–0xc00 and real
+  x86-64 code from ~0x1000). Zero AES-NI, SHA or PCLMUL instructions — the
+  driver is a capsule-dispatch shim, and decryption happens inside the TPM,
+  which agrees with the Ghidra result in §7.4. `networkx` byte-transition
+  graphs: 63,432/63,680 of 65,536 possible edges, one strongly connected
+  component, balanced out-degrees 239–255.
 * `torch` next-byte MLP: 0.44% test accuracy versus the 0.3906% random
   baseline (≈0.8σ for 10k test samples) — the stream is not learnable.
 * `pycryptodome` AES-ECB/CBC/CFB/OFB/CTR over all 15,676 derived keys: zero
