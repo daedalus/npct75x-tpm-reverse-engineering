@@ -783,6 +783,105 @@ with 34 distinct byte values — a structured test record, not a memory dump.
 No firmware marker, signature or recognizable code. Captured at
 `out/firmware/analysis/gettestresult.{bin,hex}`.
 
+### 10.8 Second encrypted image and offline decode attempts
+
+A second Lenovo package was found at
+`https://download.lenovo.com/pccbbs/thinkcentre_drivers/nuvoton_tpm_fw_update.zip`
+(SHA-256 `a7be7ccf0f65b46ff84c8ecf78b04828aeb6e9e0d9f8b0c8ba094095c8339a6b`).
+It targets M725s/M715q Gen 2/M920z/M820z and upgrades `7.2.0.1 → 7.2.0.2`.
+Its `NuvotonTpmDevCap.BIN` (271,586 bytes, SHA-256
+`642eda01e0fa50a6c68d4fc6ffc72a93933ecbb6c02e0cc52a354c3b3b8fc20b`) is the
+same DevCap format: 266 commands, 261 `0x20000202` writes, 241,302-byte
+firmware stream (SHA-256
+`9b696c07015376878820c25b9932386a1ec5c8554c034869bdb59e4be66f2c09`).
+Both are preserved under `out/firmware/` and compared by
+`tools/fw_cross_version.py`.
+
+FIPS 140-3 policy `140sp5057.pdf` states that `NTC_FIELD_UPGRADE` protects the
+input firmware payload with **AES-CTR** and ECDSA signature verification, and
+lists separate "Firmware Update Keys (ECC)" and "Firmware Update Keys (AES)"
+in the Object Administrator role. The key is installed at manufacturing, not
+derived from host-readable material.
+
+Setup-command layout is now pinned down for both packages: version table,
+`u32 bloblen = 256`, a 256-byte high-entropy blob (RSA-2048-sized, likely the
+manufacturer signature), and an 8-byte erase range. Each `0x20000202` write is
+`16B random nonce + BE u32 length + ciphertext + 10B tag`; the tag is
+uniformly random (per-byte entropy 7.10–7.28 across 251 samples).
+
+Negative results from this round (all reproducible offline):
+
+* No decompression format is present (zlib/gzip/bzip2/lzma/zstd/xz magic
+  scan), and the stream is not a repeating-key XOR (periods 1–64).
+* 619 derived keys — `NovemberRain` in ASCII/UTF-16LE/null-terminated/doubled
+  forms, the live NV auth SHA-256, GUID/version/commit strings, SHA-256 of
+  DevCap regions, all 16-byte DevCap windows, and the setup blob windows —
+  produced **zero** AES-CCM/GCM tag verifications and no low-entropy
+  CTR/CFB/OFB/CBC/ECB decryptions.
+* The 16-byte write header is a constant `0000001c000000100000001000000010`;
+  the nonce is the following 16 bytes. No nonce repeats within or between the
+  two images, no nonce equals a hash of its ciphertext, and no tag links to
+  the next nonce.
+* Cross-version exploit conditions are absent: 0 shared nonces, 0 identical
+  16-byte ciphertext blocks, 0 shared ciphertext blocks. Both streams have
+  entropy ≈7.998 and all sampled blocks unique.
+* CRC32/adler32 and obvious HMAC constructions do not reproduce the 10-byte
+  tag. Keystream-reuse XOR between chunks is at the random expectation
+  (~3.5 zero bytes per 896-byte pair).
+* The DXE driver's `NovemberRain` handling (Ghidra `FUN_00003134`,
+  `TpmFmpUefiDrv_nv_init`) is NV-auth/policy material only; it does not derive
+  a firmware AES key. `TpmFwUpdRollNonce` is a UEFI variable, absent on this
+  host.
+* The `DevCapWIN.EXE`/`DevCapWINx64.EXE` tools only replay the pre-built
+  commands in the BIN; they do not decrypt it.
+* No persistent TPM key object exists (`handles-persistent` empty), and the
+  standard command inventory has no `TPM2_FirmwareRead` (the `0x122`/`0x124`
+  indexes are `NV_UndefineSpace`/`ChangeEPS`).
+
+Conclusion: the payload key is a manufacturing-installed AES key inside the
+NPCT75x. With two independently randomized ciphertext images and no reused
+nonce or block, there is no offline distinguisher available from the host
+artifacts. Plaintext still requires reading the chip's internal flash or
+otherwise extracting that key from the silicon.
+
+### 10.9 Two-window sliding XOR differential (2026-11-20)
+
+`tools/fw_slide_xor.py` slides two equal-length windows over the two images
+independently: for lag `d = j - i` it compares `A[i:i+W]` with `B[j:j+W]`,
+sweeping `i` across every valid offset. This detects a block copied between
+versions but shifted by `n` bytes, which a single fixed anchor per lag misses.
+A first pass uses FFT cross-correlation of the 256 byte-value indicators to
+rank lags by total byte equality; a cumulative-sum sweep then locates the best
+window at each candidate lag and re-scores those peaks for Shannon entropy,
+zero-byte fraction, index of coincidence and longest constant-byte run.
+
+Two artifacts had to be removed before the result was meaningful:
+
+1. `DevCapScript.firmware` concatenates `nonce(16) || BE length(4) ||
+   ciphertext || tag(10)` per chunk. The 4-byte length fields are identical
+   across versions at aligned chunk positions, producing false equality at
+   lags `0`, `±1` and `±926` (real z 30.9/8.7/35.6 vs permutation-control max
+   5.95). The tool now strips nonce, length and tag by default and operates on
+   **225,280 / 233,472 bytes of pure ciphertext**; `--raw` retains the framed
+   stream for reproducing that artifact.
+2. FFT lag indexing was verified against direct comparison at seven lags
+   before use (exact match).
+
+Clean-ciphertext result (W=512, 450,561 lags, 201 candidate lags, ~90M windows):
+
+* Total-equality z: mean `0.001`, std `1.001`, max `4.852` — exactly the
+  random null (expected max ≈4.7 for this many tests).
+* Best window: `11/512` zero XOR bytes (2.15%); random expectation 2/512.
+  Entropy `7.55`, IC `0.0041`, longest constant run `2`.
+* Longest exact shared byte run between the two ciphertexts: **0 bytes** at
+  seed length 8 (random expectation ≈4.45), i.e. no reused keystream block of
+  even 8 bytes.
+
+Conclusion: no shifted-block copy, no keystream reuse and no cross-version
+plaintext correlate exists in the host artifacts. The earlier "structure" was
+entirely the DevCap framing. This closes the sliding-window differential
+avenue; it adds no key material.
+
 ---
 
 ## 10. Open questions

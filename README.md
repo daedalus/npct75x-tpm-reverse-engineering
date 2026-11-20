@@ -52,6 +52,17 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   are output-only, and SPDM only encrypts the same TIS traffic. §10.6 has the
   source cross-references. A read-only `TPM2_GetTestResult` probe returned a
   225-byte diagnostic record, not a memory dump (§10.7).
+* A second Lenovo Nuvoton package (`nuvoton_tpm_fw_update.zip`) yielded a
+  7.2.0.2 DevCap with 266 commands and a 241,302-byte stream (pure ciphertext
+  233,472 bytes). Cross-version comparison found 0 shared nonces, 0 identical
+  16B blocks and 0 shared ciphertext blocks; `tools/fw_cross_version.py`
+  reproduces it. §10.8.
+* `tools/fw_slide_xor.py` slides two independent equal-length windows over both
+  ciphertext streams to detect a block shifted by *n* bytes. Framing must be
+  stripped first (identical BE length fields otherwise fake equality at lags
+  `0`/`±1`/`±926`). On pure ciphertext the equality z-score is a perfect random
+  null (std 1.001, max 4.85), best window is 11/512 zero bytes, and the longest
+  exact shared run is 0 — no keystream reuse or shifted copy. §10.9.
 
 ## Safety model
 
