@@ -1125,7 +1125,9 @@ experiments used CC `0x20000200` (setup) or the read-only vendor commands.
   sessions using the NovemberRain NV digest, its ASCII/SHA-256 forms, 32 zero
   bytes and the setup digest, across four cpHash layouts and three attribute
   bytes, all return `rc=0xA84 VALUE (session 2)`, i.e. HMAC rejected. Guessing
-  the secret was abandoned.
+  the secret was abandoned. **Correction (§9.19): the `0xA84` was a u32-vs-u16
+  TPM2B wire-format bug in the probe scripts; with correct formatting the
+  verdict is the ordinary `0x9A2 BAD_AUTH`.**
 * **Read commands expose nothing.** `0x20000204`, `0x20000213`, `0x20000216`
   return their fixed responses with or without handle/session; adding any
   parameter yields `SIZE`. `0x20000214` is a 1-byte selector: bare →
@@ -1186,7 +1188,8 @@ paths (§10.10–10.15). All were negative:
   32 raw candidates (NovemberRain derivations, SHA-1/256, MD5, UTF-16,
   setup digest, common words) all return `rc=0xA84`; the TPM stays healthy
   (`0x20000213` baseline unchanged). PLATFORM authValue remains unknown and
-  is not simply NovemberRain-derived.
+  is not simply NovemberRain-derived. (§9.19: these `0xA84` results were
+  wire-format artifacts; correct formatting yields `0x9A2 BAD_AUTH`.)
 * **Residual crypto gap closed** — tested (a) AES-ECB/HMAC of chunk counters
   against the 16-byte IVs (15,676 candidate keys, 7 counter encodings, zero
   hits) and (b) AES-CTR using each chunk's own IV as the 128-bit initial
@@ -1531,6 +1534,45 @@ dossier was collected from `/dev/tpmrm0`. Key results:
 
 No auth-bearing material was found. The correlation narrows the vendor
 property semantics but does not move the PLATFORM authValue problem.
+
+### 9.19 Targeted FUM auth probe — wire-format bug found (2026-11-20)
+
+With a narrow authorization for setup-only probing (CC `0x20000200`, handle
+`0x4000000C`, no erase/write/commit/`0x2000012f`/`0x20000211`), a new batch of
+PLATFORM auth candidates was tried. The decisive finding is a **tooling bug in
+all prior FUM auth scripts**, not a new secret:
+
+* `fum_auth.py`, `fum_hmac.py`, `fum_rawpw.py` and `fum_nonce_derived.py` each
+  define a local `tpm2b(b) = u32(len(b)) + b`. TPM2B uses a **u16** length
+  prefix (see `tpm_re.wire.tpm2b`). The extra two bytes per TPM2B (nonce,
+  hmac) made the TPM misparse the auth area and return the misleading
+  `0xA84 VALUE (session 2)` — it was **not** evidence of "HMAC rejected" as
+  §10.15/§10.16 claimed. Only the *empty-password* result (`0x9A2 BAD_AUTH
+  (session 1)`) happened to survive, because `u32(0)` vs `u16(0)` does not
+  shift following fields in a way that changes that verdict.
+* Rebuilt with `tpm_re.wire.build` / `tpm2b` (correct u16 lengths), **every**
+  candidate — 12 nonce/default derivations plus re-tests of the NV digest,
+  ASCII `NovemberRain` and 32 zero bytes — returns the clean `0x9A2 BAD_AUTH
+  (session 1)`. Wrong PLATFORM auth behaves exactly like any other wrong auth;
+  there is no special `VALUE` signal to exploit.
+* Error semantics were calibrated with a read-only `NV_Read(0x01802006,
+  authHandle=PLATFORM)`: empty, zeros, random and the NV digest **all** return
+  `0x9A2 BAD_AUTH (session 1)`. So the FUM setup auth check is conventional.
+* Structural variants tested (all setup-only, TPM stayed healthy): no session
+  → `0x125 AUTH_MISSING`; one empty → `0x9A2`; two empty → `0x9A2`; candidate
+  + empty → `0x9A2`; attrs=3 → `0x982 ATTRIBUTES`; attrs=0 → `0x9A2`. Modified
+  setup params (new version `7.2.3.0`, truncated to 16/100 B) did not change
+  the error — the gate is the authValue, not the parameters.
+* New zero-nonce derivations (the driver's `TpmFwUpdRollNonce` is absent from
+  NVRAM, so a default/zero nonce was plausible) were all rejected: the
+  all-zero 16-byte NV data value, `HMAC-SHA256` of the NV digest / UTF-16 /
+  ASCII `NovemberRain` over 16 zero bytes, `SHA256` concatenations with zero
+  nonce, and both 16-byte halves of the NV digest.
+
+**Net effect:** the targeted auth attempt confirms PLATFORM auth remains an
+unknown runtime value; the earlier `0xA84` evidence was a wire-format artifact.
+No vendor/firmware state was touched and the `0x20000213` baseline was
+unchanged before and after every batch.
 
 ## 10. Open questions
 
