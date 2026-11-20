@@ -1233,10 +1233,10 @@ that variable back and HMACs it with `NovemberRain` to obtain the policy handle.
 
 Consequences:
 
-* The PLATFORM auth is **not a fixed static string**. It is a policy digest
-  bound to a per-update random nonce that the driver itself provisions. This
-  explains why every offline XOR/AES/HMAC/sliding-window search over static
-  artifacts failed.
+* The PLATFORM auth is **not a fixed static string** — it is BIOS/runtime state.
+  The driver *clears* it to empty using a policy session bound to a per-update
+  random nonce that it provisions (see §9.15 correction). This explains why
+  every offline XOR/AES/HMAC/sliding-window search over static artifacts failed.
 * ~~The driver talks to the TPM over vendor command codes `0x93`, `0xE5`,
   `0x4C`, …~~ **Superseded — see the correction below.** Those small values are
   response-buffer sizes; the driver uses only *standard* TPM 2.0 commands.
@@ -1326,22 +1326,44 @@ hmac         = HMAC-SHA256(authKey,
                  cpHash || TPM_GetRandom(32) || StartAuthSession blob || 0x00)
 ```
 
-Two consequences settle the offline question:
+**Correction to the earlier "policy digest becomes the PLATFORM auth" claim.**
+Re-reading both `HierarchyChangeAuth` wrappers settles what is actually written:
 
-1. The HMAC **key is the already-known NV `0x01802006` auth**. The TPM validates
-   it against the auth entity (the NV index) whose public area is read by
-   `Tpm2NvReadPublic` — this is why the NV password is a prerequisite. The HMAC
-   authenticates the *policy commands*; it is not itself the PLATFORM auth.
-2. `GetRtTpmFwUpdPolicyHndl` (`0x3134`) chains `PolicySecret → PolicyNV →
-   PolicyCommandCode → PolicyGetDigest` on one policy session, then hands the
-   resulting **policy digest** to `Tpm2HierarchyChangeAuth_SetAuthBlob`
-   (`HierarchyChangeAuth`, `0x129`). That digest — a one-way hash of the TPM's
-   policy state, seeded by the random nonce — is what becomes the PLATFORM
-   authValue. It is recomputed at provisioning time from live TPM randomness and
-   the nonce; it cannot be derived from static artifacts, and no TPM command
-   reads a hierarchy authValue back. This is the cryptographic reason every
-   offline search failed and why recovering the live auth requires either the
-   nonce plus a live policy session or running the provisioning path.
+* `Tpm2HierarchyChangeAuth_SetAuthBlob` (`0x6e94`, `0x129`) sends `newAuth` =
+  the caller's `param_1` bytes at `0x16d`; with `(0, NULL, …)` it writes an
+  **empty** authValue. This is the first thing `Tpm20ResetEmptyPlatformAuth`
+  tries. It succeeds only if the current PLATFORM auth is already empty.
+* `Tpm2HierarchyChangeAuth_PolicyHandle` (`0x6bdc`, `0x129`) sends
+  `local_17d = 0` — i.e. `newAuth` size **zero** — using the *policy session*
+  handle as the authorization. It also writes an **empty** authValue; the
+  policy session is only the *authorization* for the reset.
+
+So the driver never installs the policy digest as the PLATFORM authValue. The
+full `Tpm20ResetEmptyPlatformAuth` (`0x2d18`) flow is:
+
+1. Try `HierarchyChangeAuth(empty, password session)` → done if auth was empty.
+2. On failure, read a cached 32-byte policy digest from an AMI proprietary
+   variable store (`ReadUefiVariableByGuid` `0x80e4`: protocol `0314dde5-…`,
+   record `ac61fe57-65dd-5240-b539-c7b42a868668`); compare its header `0x129`.
+3. Build the policy via `GetRtTpmFwUpdPolicyHndl(0x129, …)`, optionally checking
+   the recomputed `PolicyGetDigest` against the cached value.
+4. Call `HierarchyChangeAuth_PolicyHandle(policySession)` — reset PLATFORM auth
+   to **empty**, authorized by the policy. FUM setup then works with an empty
+   password.
+
+`ProvisionTpmFwUpdRollNonce` (`0x35fc`) is the writer of that cached digest
+(protocol call at `0x138` with the same `0314dde5-…` GUID, data from
+`PolicyGetDigest`) and of the `TpmFwUpdRollNonce` UEFI variable. Both the cached
+digest and the nonce are runtime/provisioning state; the digest lives in AMI
+NVRAM under `ac61fe57-…`, **not** in the 156 exported efivars (re-checked
+2026-11-20: no `ac61fe57`, `0314dde5`, `106a48f7`, `582d29ed` or `677ac786`).
+
+**Net effect is unchanged:** the PLATFORM auth is non-empty on this machine
+because the update path never ran; the driver would clear it to empty using a
+policy session seeded by the absent nonce. The policy digest is a one-way
+function of the nonce and live TPM randomness, no TPM command reads a hierarchy
+authValue back, and the cached digest is not exposed to Linux. Every offline
+route remains closed and no live policy action is authorized.
 
 ## 10. Open questions
 
