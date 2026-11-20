@@ -157,10 +157,43 @@ wire carries the V bit (bit 29), so the codes are:
 Earlier versions of the toolkit dropped the V bit and printed
 `0x00000200..`; those bare values are not valid command codes. Vendor codes
 have no names in the TPM 2.0 tables, so the toolkit prints them as
-`VENDOR_0x2000xxxx`. **Their semantics and side effects are
-unknown; none have been sent.** Sending them is gated behind `--allow-write`
-and is out of scope until the vendor documentation or the firmware image
-explains them.
+`VENDOR_0x2000xxxx`. Sending them is gated behind `--allow-write`; the
+read-only subset has been characterised live, and the update path is
+**still never exercised** (see §7.2 for why `0x20000202` is permanently
+banned).
+
+### 4.3 Vendor-command semantics from the Nuvoton DevCap driver (static)
+
+Disassembling the UEFI boot-service driver embedded in the Nuvoton firmware
+package (§7.2, `NuvotonTpmDevCap.BIN` at file offset `0x118`) resolves part of
+the vendor surface. The driver builds TPM commands as byte arrays with
+**big-endian** command codes and calls a common sender at VA `0x23c0`:
+
+* **VA `0x1427`** builds `80 01 00 00 00 0a 20 00 02 13` — a 10-byte,
+  no-handle, no-parameter **`0x20000213`** command. After the send it
+  byte-swaps the response code (masks `0xff0000`/`0xff00`) and requires it to
+  be zero, then requires the **last byte of the response to be `0xAA`**
+  (`cmp BYTE PTR [rsp+rax+0x40],0xaa` at VA `0x14e7`). Our previously probed
+  live response, `ffffa700fbff7ffffbfffffffbf0ffffaaaa` (18 bytes), ends in
+  `aa aa`, matching the driver's validation exactly. This is strong evidence
+  that `0x20000213` is a read-only firmware/state query and that we decoded
+  its response format correctly.
+* **VA `0x3644`** builds a session-tagged command with CC big-endian
+  `0x20000200`, handle `0x4000000C`, a session area whose 4-byte size is
+  computed at runtime, and the 32-bit value `0x40000009` in the session area.
+  The size field is patched from `authSize + payloadLen + 8`. This matches the
+  live observation that `0x20000200` requires a handle and a session.
+* Other commands in the same driver use `0x0000012E` and `0x0000017A`
+  (`GetCapability`) with the same handle `0x4000000C`, confirming that this NV
+  index is central to the firmware-update flow.
+* The driver's error strings name failure modes we observed live:
+  `Bad vendor code tag`, `Bad vendor code version`, `Bad vendor operation
+  tag`, `Invalid source version`, `Blocked by TPM FW policy`, `Deferred
+  Physical Presence Failed`, `Authorization failed`, `Target FW is already
+  installed`.
+
+None of this authorises sending the state-changing commands: `0x20000202`
+with 16 parameter bytes already wedged the chip once (§6.1).
 
 ---
 
