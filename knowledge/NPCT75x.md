@@ -429,6 +429,43 @@ validates the `AMI ` magic, the section-table bounds and the presence of both
 required section types, and can carve the type-2 firmware payload. A scan of
 `IMAGEM47.ROM` finds zero `AMI ` magic occurrences, as expected.
 
+### 7.2 External Lenovo TPM firmware packages — DevCap format
+
+Two public Lenovo packages were downloaded with `python3 -m tpm_re fetch`
+(URL + SHA-256 recorded in the `.meta` sidecars):
+
+| package | URL | SHA-256 |
+|---|---|---|
+| `nuvoton_tpm_fw_update_v2.0.zip` | `https://download.lenovo.com/pccbbs/thinkcentre_drivers/nuvoton_tpm_fw_update_v2.0.zip` | `0412f9741235c838759726a91554ab361c8553e5b45f26466fed7c286fa3fe4c` |
+| `m920_tpm20_7.85.4555.0.zip` | `https://download.lenovo.com/pccbbs/thinkcentre_drivers/tpmfwcapupd_m920_tpm20_7.85.4555.0.zip` | `90c31b7ab4a16d9fc6b669fd4910540f574d76f23cd9d343e6f61b278539ef12` |
+
+The Nuvoton package contains `NuvotonTpmDevCap.BIN` (262,902 bytes,
+SHA-256 `a9539285308a878b…`) and the Infineon package contains
+`IFX_Tpm2020DevCap.BIN` (717,643 bytes). Both use the **same custom DevCap
+container**, not the `AMI ` capsule format:
+
+* header: u32 `1`, GUID `94599413-5c4a-4d67-99a8-6e9b2bb146a2`, u32 total size,
+  u32 zero, u32 `total-0x200`, u32 `0x100`, u32 `0x256`, u32 `0x100`,
+  u32 `total-0x100`, then zeros to `0x118`;
+* a **UEFI boot-service driver PE** at `0x118` (x64, subsystem 11, four
+  sections `.text/.xdata/.reloc`) with strings including `Nuvoton TPM Device:`,
+  `Nuvoton TPM Firmware Version:`, `Bad vendor code tag`, `Invalid source
+  version`, `Blocked by TPM FW policy`, `Deferred Physical Presence Failed`;
+* for the Nuvoton BIN, a firmware descriptor at `0x5800`: a version table
+  listing source versions `7.2.0.1`, `7.2.0.2`, `7.2.1.0` and target `7.2.2.0`
+  (bytes `02 00 07 02 00 01/00 02/01 00` and `02 00 07 02 02 00`), a u64 size
+  `0x3A9D6` (240,086), and a 16-byte digest at `0x5850`;
+* from `0x5860` to `total-0x100` the data is high-entropy (~7.95 bits/byte),
+  i.e. a **signed/encrypted firmware payload** (~240 KB), not plaintext code.
+
+The Nuvoton readme states this package updates `TPM20_7.2.0.1`, `7.2.0.2` and
+`7.2.1.0` to `7.2.2.0`, and is intended for M75q-**1** (not our Gen 2). Our live
+TPM reports `TPM_PT_FIRMWARE_VERSION_1 = 0x00070002` (7.2), `VENDOR_STRING_1/2
+= "NPCT" / "75x"`, so the payload family is at least related, but the exact
+source version and decryption/verification path are not yet resolved. Crucially,
+`python3 -m tpm_re ami` finds **zero** `AMI ` capsules in either DevCap BIN or
+the extracted UEFI driver, so the §7.1 parser does not apply here.
+
 ---
 
 ## 8. NV `0x01802006` access chain — standard TPM commands only

@@ -20,6 +20,9 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   `FieldUpgradeStart`; it is state-changing and has not been probed live.
 * The TPM is operational again (`/dev/tpm0`, `MSFT0101:00`); the recovery
   attempts that failed earlier are recorded in `knowledge/NPCT75x.md` §6.1.
+* A public Lenovo Nuvoton firmware package was fetched with provenance; its
+  `NuvotonTpmDevCap.BIN` uses a **DevCap** container (not `AMI `) with a
+  ~240 KB encrypted/signed firmware payload. See `knowledge/NPCT75x.md` §7.2.
 
 ## Safety model
 
