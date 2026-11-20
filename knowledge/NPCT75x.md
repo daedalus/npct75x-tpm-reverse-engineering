@@ -1202,6 +1202,93 @@ artifact appears. Remaining routes are a published decrypted image, a key
 leak, explicitly authorized physical extraction, or a safe FUM read command
 (which the complete nine-command vendor surface shows does not exist).
 
+### 9.15 PLATFORM auth is runtime/policy-derived (Ghidra, 2026-11-20)
+
+A full decompilation pass over `TpmFmpUefiDrv` (`section1.pe`) renamed all 73
+functions. The auth path resolves as follows:
+
+| Address | Name | Role |
+|---|---|---|
+| `0x4220` | `TpmFmpUefiDrvSetImage` | FMP `SetImage`; calls reset-auth at `0x450F` |
+| `0x2d18` | `Tpm20ResetEmptyPlatformAuth` | error string at `0x9B70` confirms the name |
+| `0x3134` | `GetRtTpmFwUpdPolicyHndl` | HMAC-SHA256 of `NovemberRain` + roll nonce |
+| `0x35fc` | `ProvisionTpmFwUpdRollNonce` | generates/writes the 16-byte nonce |
+| `0x6e94` | `NpctVendorCmd93_SetAuthBlob` | vendor CC `0x93`, subcmd `0x129` |
+| `0x716c` | `NpctVendorCmdE5_HmacAuth` | vendor CC `0xE5`, subcmd `0x151` |
+| `0x756c` | `NpctVendorCmd93_HmacAuth` | vendor CC `0x93`, subcmd `0x149` |
+| `0x630c` | `NpctVendorCmd93_137_HmacAuth` | vendor CC `0x93`, subcmd `0x137` |
+| `0x6aec` | `NpctVendorCmd4C` | vendor CC `0x4C`, subcmd `0x189` |
+| `0x66fc` | `NpctGetRandomBytes` | vendor CC `0x4C`, subcmd `0x17B` |
+| `0x2acc` | `SubmitVendorCommand` | low-level submit via `DAT_0000a128+0x140` |
+| `0x5a6c` | `HmacSha256TwoPart` | HMAC-SHA256 (ipad `0x36`, opad `0x5c`) |
+| `0x8674` | `Sha256HashBuffers` | SHA-256 over a buffer list |
+
+`ProvisionTpmFwUpdRollNonce` is the decisive find. It calls
+`NpctGetRandomBytes(0x10, ...)`, copies `NovemberRain` into two buffers, hashes
+them with `TpmFmpUefiDrv_data_hash_check`, then **writes the 16-byte nonce into
+the `TpmFwUpdRollNonce` UEFI variable** (`SetVariable`, attrs `3`, size `0x10`,
+GUID `106a48f7-d30d-2749-a37c-d892b3a69ee1`). `GetRtTpmFwUpdPolicyHndl` reads
+that variable back and HMACs it with `NovemberRain` to obtain the policy handle.
+`TpmFmpUefiDrvSetImage` uses subcommand `0x12F` (the one that wedged the TPM).
+
+Consequences:
+
+* The PLATFORM auth is **not a fixed static string**. It is a policy digest
+  bound to a per-update random nonce that the driver itself provisions. This
+  explains why every offline XOR/AES/HMAC/sliding-window search over static
+  artifacts failed.
+* The driver talks to the TPM over vendor command codes `0x93`, `0xE5`, `0x4C`,
+  `0x50`, `0x9E`, `0x0A`, `0x40B`, etc. — a different surface from the
+  `0x20000xxx` commands probed on the Linux device. `0xE5` is a real command
+  code (`0x74c9: MOV dword ptr [RBP+0x680],0xe5`). The earlier `0xDD` lead was
+  a misread: at `0x6ebd` `0xdd000000` is only a placeholder for a length field,
+  overwritten at `0x6f8e` before `SubmitVendorCommand`; `0xe5dd1403` elsewhere
+  is the GUID component `0314dde5-…`, not a command.
+* The nonce variable is **absent from live NVRAM** (checked 2026-11-20): neither
+  `TpmFwUpdRollNonce` nor `TpmFwUpdMode`, and none of the other driver GUIDs,
+  appear among the 156 exported EFI variables. The 16-byte NV index
+  `0x01802006` is all zeroes. This is consistent with the driver only
+  provisioning/clearing the nonce during an actual FMP capsule update — which
+  this machine has never run through.
+* Recovering the live PLATFORM auth therefore requires either running the
+  driver's provisioning step (state-changing, effectively an update) or using
+  the `0x93`/`0xE5` vendor policy commands that previously wedged the TPM.
+  Both remain outside the non-destructive boundary.
+
+#### Driver vendor-command map
+
+All payloads are big-endian on the wire; the decompiler shows byte-swapped
+little-endian immediates (e.g. `0x29010000` → subcommand `0x129`).
+`SubmitVendorCommand` (`0x2acc`) takes `(length, payload*, code*, response*)`;
+the code is the small value in the fourth slot.
+
+| Function | Address | Code | Subcmd | Handles / notes |
+|---|---|---|---|---|
+| `NpctVendorCmd9E` | `0x5bd4` | `0x9E` | `0x169` | reads a two-field blob |
+| `NpctVendorCmd93_137_HmacAuth` | `0x630c` | `0x93` | `0x137` | HMAC over 6 buffers + caller data |
+| `NpctGetRandomBytes` | `0x66fc` | `0x4C` | `0x17B` | reads `param_1` random bytes |
+| `NpctVendorCmd50` | `0x67c4` | `0x50` | `0x15F`, `0x176` | handles `0x04000007`; creates session |
+| `NpctVendorCmd93_16C` | `0x6980` | `0x93` | `0x16C` | two u32 params |
+| `NpctVendorCmd0A` | `0x6a44` | `0x0A` | `0x165` | flush/close handle |
+| `NpctVendorCmd4C` | `0x6aec` | `0x4C` | `0x189` | reads a length-prefixed blob |
+| `NpctVendorCmd93_SetPolicyHandle` | `0x6bdc` | `0x93` | `0x129` | handle `0x4000000C` |
+| `NpctVendorCmd93_12E` | `0x6d34` | `0x93` | `0x12E` | handles `0x4000000C`, `0x40000009` |
+| `NpctVendorCmd93_SetAuthBlob` | `0x6e94` | `0x93` | `0x129` | handles `0x4000000C`, `0x40000009`; auth blob |
+| `NpctVendorCmd40B` | `0x7020` | `0x40B` | `0x17A` | returns a 128-byte blob |
+| `NpctVendorCmdE5_HmacAuth` | `0x716c` | `0xE5` | `0x151` | HMAC with nonce + `NovemberRain` |
+| `NpctVendorCmd93_HmacAuth` | `0x756c` | `0x93` | `0x149` | HMAC with `NovemberRain` |
+| `CheckTpmDeviceMagicA` | `0x40d8` | `0x100` | — | magic `0x434557` / `0x43544e` |
+| `CheckTpmDeviceMagicB` | `0x5418` | `0x100` | — | magic `0x204d5453` (`STM `) |
+| `NpctCheckDeviceSignatureB` | `0x3a0c` | `0x100` | — | magic `0x4e545a00` |
+| `CheckTpmVendorIfx` | `0x47ac` | `0x100` | — | magic `0x584649` (`IFX`) |
+| `Tpm12CheckOwner` | `0x845c` | `0x200` | `0x111` | returns 1-byte owner flag |
+| `Tpm12ClearOwner` | `0x8528` | `0x0A` | — | legacy clear |
+| `Tpm12SetDeferredPP` | `0x8598` | `0x1E` | — | legacy deferred physical presence |
+
+The `0x129` subcommand appears twice with different payloads: `0x6bdc` sets a
+policy handle, while `0x6e94` sets an auth blob. Both target platform handle
+`0x4000000C`. This is the pair `Tpm20ResetEmptyPlatformAuth` drives.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
