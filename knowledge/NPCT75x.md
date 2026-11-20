@@ -1251,43 +1251,59 @@ Consequences:
   provisioning/clearing the nonce during an actual FMP capsule update — which
   this machine has never run through.
 * Recovering the live PLATFORM auth therefore requires either running the
-  driver's provisioning step (state-changing, effectively an update) or using
-  the `0x93`/`0xE5` vendor policy commands that previously wedged the TPM.
-  Both remain outside the non-destructive boundary.
+  driver's provisioning step (state-changing, effectively an update) or driving
+  the standard policy commands (`SetPrimaryPolicy`, `PolicySecret`, `PolicyNV`,
+  `HierarchyChangeAuth`) with the correct nonce/session. Both remain outside
+  the non-destructive boundary.
 
-#### Driver vendor-command map
+#### Driver command map — standard TPM 2.0 commands, not vendor commands
 
-All payloads are big-endian on the wire; the decompiler shows byte-swapped
-little-endian immediates (e.g. `0x29010000` → subcommand `0x129`).
-`SubmitVendorCommand` (`0x2acc`) takes `(length, payload*, code*, response*)`;
-the code is the small value in the fourth slot.
+**Correction (2026-11-20).** The small values previously read as "vendor command
+codes" (`0x93`, `0xE5`, `0x4C`, …) are actually **maximum response-buffer sizes**
+passed as the fourth argument to the UEFI protocol call in `SubmitVendorCommand`
+(`0x2acc`). The real TPM command is the big-endian dword at payload offset 6
+(shown byte-swapped by the decompiler, e.g. `0x29010000` → `0x00000129`).
+Cross-checked against wolfTPM's `TPM_CC_T`: every value resolves to a **standard
+TPM 2.0 command**. There is no separate vendor command surface in this driver —
+`0x2000012f` is the vendor *alias* of standard `TPM_CC_FieldUpgradeStart`
+(`0x0000012f`), which is why both spellings appear in the literature.
 
-| Function | Address | Code | Subcmd | Handles / notes |
-|---|---|---|---|---|
-| `NpctVendorCmd9E` | `0x5bd4` | `0x9E` | `0x169` | reads a two-field blob |
-| `NpctVendorCmd93_137_HmacAuth` | `0x630c` | `0x93` | `0x137` | HMAC over 6 buffers + caller data |
-| `NpctGetRandomBytes` | `0x66fc` | `0x4C` | `0x17B` | reads `param_1` random bytes |
-| `NpctVendorCmd50` | `0x67c4` | `0x50` | `0x15F`, `0x176` | handles `0x04000007`; creates session |
-| `NpctVendorCmd93_16C` | `0x6980` | `0x93` | `0x16C` | two u32 params |
-| `NpctVendorCmd0A` | `0x6a44` | `0x0A` | `0x165` | flush/close handle |
-| `NpctVendorCmd4C` | `0x6aec` | `0x4C` | `0x189` | reads a length-prefixed blob |
-| `NpctVendorCmd93_SetPolicyHandle` | `0x6bdc` | `0x93` | `0x129` | handle `0x4000000C` |
-| `NpctVendorCmd93_12E` | `0x6d34` | `0x93` | `0x12E` | handles `0x4000000C`, `0x40000009` |
-| `NpctVendorCmd93_SetAuthBlob` | `0x6e94` | `0x93` | `0x129` | handles `0x4000000C`, `0x40000009`; auth blob |
-| `NpctVendorCmd40B` | `0x7020` | `0x40B` | `0x17A` | returns a 128-byte blob |
-| `NpctVendorCmdE5_HmacAuth` | `0x716c` | `0xE5` | `0x151` | HMAC with nonce + `NovemberRain` |
-| `NpctVendorCmd93_HmacAuth` | `0x756c` | `0x93` | `0x149` | HMAC with `NovemberRain` |
-| `CheckTpmDeviceMagicA` | `0x40d8` | `0x100` | — | magic `0x434557` / `0x43544e` |
-| `CheckTpmDeviceMagicB` | `0x5418` | `0x100` | — | magic `0x204d5453` (`STM `) |
-| `NpctCheckDeviceSignatureB` | `0x3a0c` | `0x100` | — | magic `0x4e545a00` |
-| `CheckTpmVendorIfx` | `0x47ac` | `0x100` | — | magic `0x584649` (`IFX`) |
-| `Tpm12CheckOwner` | `0x845c` | `0x200` | `0x111` | returns 1-byte owner flag |
-| `Tpm12ClearOwner` | `0x8528` | `0x0A` | — | legacy clear |
-| `Tpm12SetDeferredPP` | `0x8598` | `0x1E` | — | legacy deferred physical presence |
+`SubmitVendorCommand(length, payload*, maxResponseSize*, response*)` calls
+`(**(protocol + 0x18))(protocol, length, payload, maxResponseSize, response)`
+and overwrites the size argument with the actual response size on success.
+Payload prefix: tag `0x8002` (`TPM_ST_SESSIONS`) or `0x8001`
+(`TPM_ST_NO_SESSIONS`), then size, then command code.
 
-The `0x129` subcommand appears twice with different payloads: `0x6bdc` sets a
-policy handle, while `0x6e94` sets an auth blob. Both target platform handle
-`0x4000000C`. This is the pair `Tpm20ResetEmptyPlatformAuth` drives.
+| Function | Address | TPM command | Code | maxRsp | Notes |
+|---|---|---|---|---|---|
+| `NpctVendorCmd9E` | `0x5bd4` | `NV_ReadPublic` | `0x169` | `0x9E` | reads a two-field blob |
+| `NpctVendorCmd93_137_HmacAuth` | `0x630c` | `NV_Write` | `0x137` | `0x93` | HMAC over 6 buffers + caller data |
+| `NpctGetRandomBytes` | `0x66fc` | `GetRandom` | `0x17B` | `0x4C` | reads `param_1` random bytes |
+| `NpctVendorCmd50` | `0x67c4` | `StartAuthSession` (+`0x15F`) | `0x176` (+`0x15F`) | `0x50` | handle `0x04000007`; creates session |
+| `NpctVendorCmd93_16C` | `0x6980` | `PolicyCommandCode` | `0x16C` | `0x93` | two u32 params |
+| `NpctVendorCmd0A` | `0x6a44` | `FlushContext` | `0x165` | `0x0A` | flush/close handle |
+| `NpctVendorCmd4C` | `0x6aec` | `PolicyGetDigest` | `0x189` | `0x4C` | reads a length-prefixed blob |
+| `NpctVendorCmd93_SetPolicyHandle` | `0x6bdc` | `HierarchyChangeAuth` | `0x129` | `0x93` | handle `0x4000000C` |
+| `NpctVendorCmd93_12E` | `0x6d34` | `SetPrimaryPolicy` | `0x12E` | `0x93` | handles `0x4000000C`, `0x40000009` |
+| `NpctVendorCmd93_SetAuthBlob` | `0x6e94` | `HierarchyChangeAuth` | `0x129` | `0x93` | handles `0x4000000C`, `0x40000009`; auth blob |
+| `NpctVendorCmd40B` | `0x7020` | `GetCapability` (+`0x17A`) | `0x17A` | `0x40B` | returns a 128-byte blob |
+| `NpctVendorCmdE5_HmacAuth` | `0x716c` | `PolicySecret` | `0x151` | `0xE5` | HMAC with nonce + `NovemberRain` |
+| `NpctVendorCmd93_HmacAuth` | `0x756c` | `PolicyNV` | `0x149` | `0x93` | HMAC with `NovemberRain` |
+
+`HierarchyChangeAuth` appears twice with different payloads: `0x6bdc` sets a
+policy handle, `0x6e94` sets an auth blob. Both target platform handle
+`0x4000000C`. This is the pair `Tpm20ResetEmptyPlatformAuth` drives. Other
+families (`0x100` magic probes, `0x200` legacy owner check, `0x1E` deferred PP)
+are separate compatibility checks, not the FMP auth path.
+
+**Implication for the auth problem:** all of these are *standard* TPM commands on
+`/dev/tpmrm0`, so in principle they can be issued from Linux. But the PLATFORM
+auth is still not recoverable: `HierarchyChangeAuth` *writes* the auth and no TPM
+command reads a hierarchy authValue back. The `0x93`/`0xE5` values wedging the
+TPM earlier were sizing-sensitive payloads, not an undocumented command family;
+the state-changing commands themselves (`SetPrimaryPolicy`, `PolicySecret`,
+`HierarchyChangeAuth`, `FieldUpgradeStart`) remain off-limits without explicit
+authorization.
 
 ## 10. Open questions
 
