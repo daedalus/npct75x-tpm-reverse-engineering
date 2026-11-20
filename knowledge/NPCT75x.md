@@ -1305,6 +1305,45 @@ the state-changing commands themselves (`SetPrimaryPolicy`, `PolicySecret`,
 `HierarchyChangeAuth`, `FieldUpgradeStart`) remain off-limits without explicit
 authorization.
 
+#### Exact policy/HMAC derivation (definitive offline closure)
+
+`HmacSha256TwoPart(key, n, ptr[], len[], out)` at `0x5a6c` is textbook
+HMAC-SHA256 (ipad `0x36` at `0xa030`, opad `0x5c` at `0xa040`): key copied into a
+64-byte block, `SHA256((key^ipad) || data)`, then
+`SHA256((key^opad) || inner)`. The data is `n` buffers addressed by `ptr[]`
+with parallel `len[]`.
+
+`Tpm2PolicySecret_HmacAuth` (`0x716c`, TPM `PolicySecret`=`0x151`) computes:
+
+```
+nonce        = 16 B read from TpmFwUpdRollNonce UEFI variable
+digestNonce  = SHA256(nonce)                       # 0x6d3, 32 B
+cpHash       = SHA256(8 buffers: cmdCode 0x151, NV public area from
+               NV_ReadPublic, policy session handle, digestNonce,
+               random blob, …)                     # 0x5c8, 32 B
+authKey      = SHA256(UTF-16LE("NovemberRain\0"))  # 0x506, 32 B
+             = 4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf
+hmac         = HMAC-SHA256(authKey,
+                 cpHash || TPM_GetRandom(32) || StartAuthSession blob || 0x00)
+```
+
+Two consequences settle the offline question:
+
+1. The HMAC **key is the already-known NV `0x01802006` auth**. The TPM validates
+   it against the auth entity (the NV index) whose public area is read by
+   `Tpm2NvReadPublic` — this is why the NV password is a prerequisite. The HMAC
+   authenticates the *policy commands*; it is not itself the PLATFORM auth.
+2. `GetRtTpmFwUpdPolicyHndl` (`0x3134`) chains `PolicySecret → PolicyNV →
+   PolicyCommandCode → PolicyGetDigest` on one policy session, then hands the
+   resulting **policy digest** to `Tpm2HierarchyChangeAuth_SetAuthBlob`
+   (`HierarchyChangeAuth`, `0x129`). That digest — a one-way hash of the TPM's
+   policy state, seeded by the random nonce — is what becomes the PLATFORM
+   authValue. It is recomputed at provisioning time from live TPM randomness and
+   the nonce; it cannot be derived from static artifacts, and no TPM command
+   reads a hierarchy authValue back. This is the cryptographic reason every
+   offline search failed and why recovering the live auth requires either the
+   nonce plus a live policy session or running the provisioning path.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
