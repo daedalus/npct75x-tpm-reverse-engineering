@@ -250,6 +250,7 @@ described above. There are no standalone scripts left to run.
 1. Acquire the Lenovo BIOS/EC update for this machine (`tpm-re fetch`), scan it for the FMP capsule (`tpm-re fmp` / `tpm-re carve`), extract the NPCT75x firmware payload, and analyse it with REA, an external tool that is not part of this repository (`inspect_firmware_regions`, `inspect_binary_layout`).
 2. ~~Characterise the vendor surface.~~ Done: properties `0x0..0x2` and the nine vendor codes `0x20000200..0x20000216` are enumerated; `0x20000213` is sourced from wolfTPM as `NTC2_GetConfig`, and no command reads firmware (§4.2 and §9 of the knowledge file).
 3. Optional hardware path: a physical chip programmer, vendor JTAG port or fault-injection setup. SPI/I²C bus capture only observes commands and cannot read the on-chip flash; no such hardware is currently available.
+4. ~~Cross-vendor firmware packages.~~ HP SoftPaq SP111032 ships the same 7.2.2.0 payload with byte-identical ciphertext, IVs and signatures; global Nuvoton encryption is confirmed (§10.14 of the knowledge file). `TPM2_GetTestResult` and the CC targets yield no key material.
 
 ## Field notes
 

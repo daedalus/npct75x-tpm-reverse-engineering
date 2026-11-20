@@ -1053,6 +1053,58 @@ obfuscated in TPM flash, and no candidate `n` exists in any host artifact. The
 prerequisite is absent, so the attack is inapplicable. Firmware decoding stays
 closed without physical extraction.
 
+### 10.14 Cross-vendor packages, GetTestResult, and CC key details
+
+**HP SoftPaq SP111032 ships the identical encrypted firmware.** HP's public
+TPM firmware update for 7.2.2.0
+(`https://ftp.hp.com/pub/softpaq/sp111001-111500/sp111032.exe`, SHA-256
+`edb3e356848ae2a68b1d964c86399a3d67235f5c2d405218f05dad91504d1489`) extracts
+`FU_2.0_7.2.2.0_0.bin` (240,086 bytes, SHA-256
+`5bbc726c5e2084a0fc8b1b5c8aa11b6bbb548494bfe43927b9ac3c781c60a72d`). Its
+layout is an HP-specific 48-byte header, the 256-byte setup blob at offset 48,
+padding to offset 376, then 252 firmware chunks on a 952-byte stride, a short
+commit chunk, and the 256-byte commit signature.
+
+A byte-level comparison against `out/firmware/NuvotonTpmDevCap.BIN` (Lenovo
+7.2.2.0) found:
+
+- all 252 firmware chunk IVs, ciphertexts and 10-byte tags identical;
+- the 256-byte setup blob (`ba438def…`) and 256-byte commit blob
+  (`eb0790e8…`) identical (SHA-256 `58028c31…` for the latter);
+- HP's 253rd chunk is the same 6-byte commit value with the same tag and IV.
+
+This is decisive: Nuvoton encrypts the firmware **once** with a single global
+key and fixed per-chunk nonces, then hands the same payload to every OEM. No
+OEM package can provide a second encryption under a different key, a reused
+nonce, or a plaintext copy. Dell's 7.2.2.0 and 7.2.3.1 utilities were already
+shown to contain only platform firmware PFS capsules (§10.x); the HP package
+closes the remaining cross-vendor avenue.
+
+**`TPM2_GetTestResult` is not a key source.** The live command returns 225
+bytes beginning `aa55 0000 000001fe 0100 0400 0011 …`. At offset 8 onward it
+is a run of big-endian small integers (41, 52, 43, 44, 42, …) consistent with
+Nuvoton self-test counters, followed by build constants
+(`00040001 0103 0020 00001000 …`). Every 16-byte sliding window and the
+SHA-256/MD5 of the whole blob were tested as AES-128 keys against the first
+firmware chunk under GCM/CCM/EAX tag verification and as an AES-ECB keystream
+looking for an ARM vector-table prefix: zero hits. The command is read-only
+and safe; it yields no key material.
+
+**CC documentation agrees with the FIPS policies.** The TPM 1.2 Security
+Target states that field-upgrade data is decrypted with AES-128-CTR and
+integrity-protected with an RSA PKCS#1 v2.0 signature. The NPCT7xx TPM 2.0
+targets call the deliverable a "Zip file with the encrypted field upgrade
+payload" sent by Nuvoton to the OEM, and require signature/digest verification
+before leaving the firmware-update mode. The FIPS 140-3 policies for 7.2.4.1
+and 7.2.5.1 confirm `NTC_FIELD_UPGRADE` = AES-CTR + ECDSA SigVer with
+manufacturing-installed, obfuscated, Clear-zeroized firmware-update keys; the
+7.2.5.1 table also lists an "ECDSA SigVer (legacy)" service for older images.
+No document publishes a modulus, public key, or key-derivation input.
+
+Consequently every offline decoding route is exhausted. A plaintext dump now
+requires either a key leak from Nuvoton, a decrypted image published elsewhere,
+or authorized physical extraction from the NPCT75x package.
+
 ---
 
 ## 10. Open questions
