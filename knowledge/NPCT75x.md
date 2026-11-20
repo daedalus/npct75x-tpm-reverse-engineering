@@ -634,7 +634,113 @@ Associated detection/state:
 
 ---
 
-## 9. Open questions
+## 9. Device-side dump attempts and external cross-checks (2026-11-20)
+
+### 10.1 The vendor command surface is complete — there is no read-back command
+
+**Observed** (`tpm2_getcap commands`, a read-only `GET_CAPABILITY(TPM_CAP_COMMANDS)`
+call). Exactly nine entries carry `TPMA_CC.V = 1`:
+
+```
+0x20000200  0x20000201  0x20000202  0x20000203  0x20000204
+0x20000211  0x20000213  0x20000214  0x20000216
+```
+
+`tpm2-getcap` prints the first and sixth as `0x22000200`/`0x22000211`
+because its `value` field folds in the `cHandles = 1` attribute; the wire
+command codes remain `0x20000200` and `0x20000211`. All nine are already
+listed in §4.2. None of them is a firmware/flash read.
+
+**Derived** from wolfTPM v4.2.0 (`wolftpm/tpm2.h`, source cloned and read
+offline from `https://github.com/wolfSSL/wolfTPM`):
+
+* `TPM_CC_NTC2_PreConfig = CC_VEND + 0x0211` → `0x20000211` (auth required,
+  state-changing, unprobed here).
+* `TPM_CC_NTC2_GetConfig = CC_VEND + 0x0213` → `0x20000213` (read-only).
+
+`NTC2_GetConfig` returns an 18-byte `CFG_STRUCT`, not an opaque bitmask. Our
+live response `ffffa700fbff7ffffbfffffffbf0ffffaaaa` decodes as:
+
+| field | value | field | value |
+| --- | --- | --- | --- |
+| `Base0` | `0xff` | `Cfg_D` | `0xff` |
+| `Base1` | `0xff` | `Cfg_E` | `0xff` |
+| `GpioAltCfg` | `0xa7` | `Cfg_F` | `0xff` |
+| `GpioInitValue` | `0x00` | `Cfg_G` | `0xfb` |
+| `GpioPullUp` | `0xfb` | `Cfg_H` | `0xf0` |
+| `GpioPushPull` | `0xff` | `Cfg_I` | `0xff` |
+| `Cfg_A` | `0x7f` | `Cfg_J` | `0xff` |
+| `Cfg_B` | `0xff` | `isValid` | `0xaa` |
+| `Cfg_C` | `0xfb` | `isLocked` | `0xaa` |
+
+wolfTPM defines `NTC2_CFG_H_SPDM_DISABLE = 0x02`, i.e. SPDM is enabled when
+`Cfg_H` bit 1 is **clear**. Our `Cfg_H = 0xf0` therefore indicates SPDM is
+already enabled on this chip. That is a configuration observation only — it
+does not provide a firmware read path.
+
+The Nuvoton-specific SPDM vendor commands are `GET_PUBK`, `GIVE_PUB`,
+`TPM2_CMD`, `GET_STS_` and `SPDMONLY` (wolfSPDM, `src/vendor/spdm_nuvoton.c`).
+`TPM2_CMD` merely wraps ordinary TPM commands in an AES-256-GCM encrypted
+SPDM session; none of these commands reads firmware.
+
+### 10.2 Public security targets confirm the plaintext never leaves the chip
+
+* 2017 ANSSI ST for FW `7.2.0.1` (same family as our target): *"The Field
+  Upgrade process does not expose the FW as plain text and uses
+  authentication to verify the integrity and source of the FW."*
+* 2026 NPCT7xx ST (rev 1.59, config 1.4.5.5): Booter and Cryplib are in ROM
+  and their versions *"can't be changed or obtained by the TOE user"*;
+  BootLoader and Upgradeable Software live in on-chip non-volatile memory.
+  The internal version is exposed through `TPM_PT_VENDOR_STRING_3` — which
+  is exactly why our `"!!4"` value matches wolfTPM's identification string
+  `NPCT75x"!!4rls, Fw 7.2`.
+
+**Derived**: the ciphertext we extracted is the *only* firmware
+representation available over any host-visible interface. The decrypted
+image exists only inside the TPM package.
+
+### 10.3 Host-side read paths tried and ruled out
+
+* `/dev/mem`: passwordless `sudo` is available, but `CONFIG_STRICT_DEVMEM`
+  applies. Physical page 0 reads as zeros; the read at `0x100000` fails with
+  EPERM. No system RAM or firmware region is reachable.
+* `/dev/spidev*`: absent. `/dev/i2c-0..7` exist but are root-only; the only
+  enumerated devices are `0x36`/`0x37` (`dummy`) and `0x50` (`ee1004`, DIMM
+  SPD). `i2cdetect` is not installed. No TPM firmware path on any I²C bus.
+* `/dev/gpiochip0` exists (root-only), but there is no evidence that any GPIO
+  is wired to `TPM_RST` on this ThinkCentre — the GPIO-reset instructions in
+  wolfTPM are for a Nuvoton daughter board on an SBC. Toggling GPIOs is
+  therefore gated and was not attempted.
+* EFI variables contain only small TPM flag blobs (10–12 bytes), no capsule
+  or firmware image.
+* `NV_ReadPublic` lists only three indices (`0x01802006`, `0x01C00002`,
+  `0x01C0000A`); none holds firmware.
+
+### 10.4 Further offline crypto dead ends
+
+* The proven NV auth secret
+  `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf` and
+  all `NovemberRain`/UTF-16LE-derived 16-byte keys were tried as AES keys
+  with CCM `mac_len = 10` over seven nonce lengths and two AAD variants —
+  zero tag-verified decryptions.
+* The 252-byte trailing array in the `0x20000203` commit command has one byte
+  per write chunk but entropy `7.16`; using each byte as a per-chunk XOR or
+  subtract key leaves chunk entropy at ~`7.79`, so it is not a simple key
+  stream.
+* Together with §7.4 this closes the practical offline key-recovery search:
+  the key is internal to the TPM, and the package contains ciphertext plus
+  signature only.
+
+### 10.5 What would actually be needed
+
+A plaintext dump requires physical access to the NPCT75x package: a
+SOIC/DFN chip programmer, a vendor JTAG/debug port, or fault injection. None
+of those is present. No further host command or offline attack against the
+captured package can produce plaintext.
+
+---
+
+## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
    confirmed live: `SHA256(UTF-16LE("NovemberRain\0"))` =

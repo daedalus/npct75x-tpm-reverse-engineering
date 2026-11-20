@@ -4,7 +4,7 @@
 
 The toolkit was written while reverse engineering the discrete TPM in a Lenovo ThinkCentre M75q Gen 2 (Nuvoton **NPCT75x**, firmware **7.2**). The observed facts and the open questions live in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md).
 
-## Current status (2026-11-19)
+## Current status (2026-11-20)
 
 * Offline suite: **97 tests pass** (`python3 -m pytest tests/ -q`).
 * NV `0x01802006` auth is **statically derived and live-confirmed**:
@@ -36,6 +36,17 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 * `python3 tools/fw_crypto_audit.py FW.bin DEVCAP.BIN OUTDIR` reproduces the
   portion dumps and the cleartext audit (repeating-key XOR, known plaintext,
   ECB, container key search).
+* wolfTPM v4.2.0 identifies this exact module (`NPCT75x"!!4rls, Fw 7.2`) and
+  maps `0x20000213` to `NTC2_GetConfig` (18-byte `CFG_STRUCT`) and
+  `0x20000211` to the state-changing `NTC2_PreConfig`. The live `Cfg_H` is
+  `0xf0`, so SPDM is already enabled. See `knowledge/NPCT75x.md` §9.
+* The nine V-bit commands in `TPM_CAP_COMMANDS` are the complete vendor
+  surface. None of them, and none of the Nuvoton SPDM vendor commands, reads
+  firmware. Public Nuvoton security targets state explicitly that field
+  upgrade never exposes plaintext; a dump therefore needs physical access to
+  the chip (programmer, JTAG or fault injection), which is not available.
+  Host-side paths (`/dev/mem` under `STRICT_DEVMEM`, `/dev/spidev`, I²C, EFI
+  variables, NV indices) were checked and ruled out — §9 for details.
 
 ## Safety model
 
@@ -189,8 +200,8 @@ described above. There are no standalone scripts left to run.
 ## Roadmap
 
 1. Acquire the Lenovo BIOS/EC update for this machine (`tpm-re fetch`), scan it for the FMP capsule (`tpm-re fmp` / `tpm-re carve`), extract the NPCT75x firmware payload, and analyse it with REA, an external tool that is not part of this repository (`inspect_firmware_regions`, `inspect_binary_layout`).
-2. Characterise the vendor surface: properties `0x0..0x2` and the nine vendor command codes (`0x20000200..0x20000216`), via `tpm-re vendor --sample` and `tpm-re vendor-probe --allow-vendor`. Interpret results only once their semantics are sourced from documentation.
-3. Optional hardware path: SPI capture between the PCH and the TPM, then `tpm-re sigrok` to turn MOSI/MISO bytes into frames and `tpm-re frames` to decode them.
+2. ~~Characterise the vendor surface.~~ Done: properties `0x0..0x2` and the nine vendor codes `0x20000200..0x20000216` are enumerated; `0x20000213` is sourced from wolfTPM as `NTC2_GetConfig`, and no command reads firmware (§4.2 and §9 of the knowledge file).
+3. Optional hardware path: a physical chip programmer, vendor JTAG port or fault-injection setup. SPI/I²C bus capture only observes commands and cannot read the on-chip flash; no such hardware is currently available.
 
 ## Field notes
 
