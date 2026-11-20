@@ -518,11 +518,15 @@ commands are now unambiguous:
 
 The `0x20000202` data stream (concatenating the 926/414-byte payloads after
 each 16-byte header) is **232,840 bytes**, SHA-256
-`6659e5c55beb02bf55ecb818b7cb9288e59e7cd5e4ee6f0254f7e0b37b42ca16`, saved as
-`/tmp/opencode/fwpkg/npct75x_fw_7.2.2.0.bin`. It is still high-entropy, so it
-is the **encrypted/obfuscated firmware image as delivered to the TPM** — the
-TPM itself decrypts it during the update. We now have the exact byte stream,
-not just a container.
+`6659e5c55beb02bf55ecb818b7cb9288e59e7cd5e4ee6f0254f7e0b37b42ca16`. It is
+kept at `out/firmware/npct75x_fw_7.2.2.0.bin` (gitignored) alongside the source
+`out/firmware/NuvotonTpmDevCap.BIN` (SHA-256 `a9539285…fbc8baf`). Its byte
+entropy is **7.9979 bits/byte** with all 256 byte values near-uniform (counts
+808–1401) and no ASCII strings at all, so this is the **encrypted firmware
+image as delivered to the TPM** — the TPM decrypts it internally during the
+update. The 16-byte digest in the setup command (`ba438def…388e35`) does not
+match SHA-256 of the stream, the script, or the setup params, so it likely
+covers the plaintext. We now have the exact byte stream, not just a container.
 
 This also explains the `0x20000202` wedge precisely: our probe sent **16 zero
 bytes**, while every legitimate call in this script sends **942 bytes** (or
