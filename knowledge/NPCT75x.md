@@ -1161,6 +1161,47 @@ already disappeared. `/dev/mem` MMIO poking remains blocked by
 
 ---
 
+### 10.16 New artifact sweep and residual decode gaps (2026-11-20)
+
+A fresh pass looked for artifacts outside the exhausted ciphertext/crypto
+paths (§10.10–10.15). All were negative:
+
+* **DevCap container gaps** — the 22,560-byte pre-command region is entirely
+  the embedded PE UEFI DXE driver (`MZ` at `0x118`, length `0x56f8`); the
+  256-byte trailing region is the commit signature. No plaintext firmware,
+  key blob or hidden section. Strings in the driver are only the known error
+  table (`Authorization failed`, `Target FW is already installed`, …).
+* **`DevCapWIN.EXE` / `DevCapWINx64.EXE`** — generic Nuvoton updaters; the
+  `November` string is the CRT month table, not a password. No AES key,
+  platform auth or vendor CC immediates (`0x200002xx`) are embedded — the
+  tool reads the command codes from the DevCap file at runtime.
+* **EK certificates** — read-only `NV_Read` of the two platform-created
+  indices exposed `0x1C00002` (RSA-2048 EK cert, `Key Encipherment`) and
+  `0x1C0000A` (P-256 ECDH EK cert), both issued by `NPCTxxx ECC384 LeafCA
+  022110`. These are device EKs, not firmware keys; cross-vendor payloads are
+  byte-identical (§10.14), so no firmware key can be wrapped to them.
+* **FUM auth, raw password variant** — the earlier HMAC attempts (§10.15)
+  were re-checked against `_custom_auth()`: a `TPM_RS_PW` session carries the
+  authValue itself in the hmac field, which is what the working NV auth uses.
+  32 raw candidates (NovemberRain derivations, SHA-1/256, MD5, UTF-16,
+  setup digest, common words) all return `rc=0xA84`; the TPM stays healthy
+  (`0x20000213` baseline unchanged). PLATFORM authValue remains unknown and
+  is not simply NovemberRain-derived.
+* **Residual crypto gap closed** — tested (a) AES-ECB/HMAC of chunk counters
+  against the 16-byte IVs (15,676 candidate keys, 7 counter encodings, zero
+  hits) and (b) AES-CTR using each chunk's own IV as the 128-bit initial
+  counter (the prior sweeps all used counter 0 on the concatenated stream).
+  Best decryption entropy was 7.447 on 512 bytes — i.e. random. No signal.
+* **Advisories** — SA-005/CVE-2025-2884 is DoS-only ("No confidential data is
+  at risk"); SA-006/CVE-2026-6726 is attestation-key falsification; SA-004 and
+  SA-007 are physical/timing side channels. None gives a firmware read
+  primitive on 7.2.2.0.
+
+Conclusion: offline decoding is closed unless a genuinely new key-bearing
+artifact appears. Remaining routes are a published decrypted image, a key
+leak, explicitly authorized physical extraction, or a safe FUM read command
+(which the complete nine-command vendor surface shows does not exist).
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
