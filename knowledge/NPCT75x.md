@@ -1237,13 +1237,12 @@ Consequences:
   bound to a per-update random nonce that the driver itself provisions. This
   explains why every offline XOR/AES/HMAC/sliding-window search over static
   artifacts failed.
-* The driver talks to the TPM over vendor command codes `0x93`, `0xE5`, `0x4C`,
-  `0x50`, `0x9E`, `0x0A`, `0x40B`, etc. — a different surface from the
-  `0x20000xxx` commands probed on the Linux device. `0xE5` is a real command
-  code (`0x74c9: MOV dword ptr [RBP+0x680],0xe5`). The earlier `0xDD` lead was
-  a misread: at `0x6ebd` `0xdd000000` is only a placeholder for a length field,
-  overwritten at `0x6f8e` before `SubmitVendorCommand`; `0xe5dd1403` elsewhere
-  is the GUID component `0314dde5-…`, not a command.
+* ~~The driver talks to the TPM over vendor command codes `0x93`, `0xE5`,
+  `0x4C`, …~~ **Superseded — see the correction below.** Those small values are
+  response-buffer sizes; the driver uses only *standard* TPM 2.0 commands.
+  Initial size-field placeholders misread as command codes include `0xDD`
+  (`0x6ebd`), `0x15F` (`0x67c9`), `0xE9`, `0xDF`; `0xe5dd1403` is the GUID
+  component `0314dde5-…`, not a command.
 * The nonce variable is **absent from live NVRAM** (checked 2026-11-20): neither
   `TpmFwUpdRollNonce` nor `TpmFwUpdMode`, and none of the other driver GUIDs,
   appear among the 156 exported EFI variables. The 16-byte NV index
@@ -1279,7 +1278,7 @@ Payload prefix: tag `0x8002` (`TPM_ST_SESSIONS`) or `0x8001`
 | `NpctVendorCmd9E` | `0x5bd4` | `NV_ReadPublic` | `0x169` | `0x9E` | reads a two-field blob |
 | `NpctVendorCmd93_137_HmacAuth` | `0x630c` | `NV_Write` | `0x137` | `0x93` | HMAC over 6 buffers + caller data |
 | `NpctGetRandomBytes` | `0x66fc` | `GetRandom` | `0x17B` | `0x4C` | reads `param_1` random bytes |
-| `NpctVendorCmd50` | `0x67c4` | `StartAuthSession` (+`0x15F`) | `0x176` (+`0x15F`) | `0x50` | handle `0x04000007`; creates session |
+| `NpctVendorCmd50` | `0x67c4` | `StartAuthSession` | `0x176` | `0x50` | handle `0x04000007`; creates session |
 | `NpctVendorCmd93_16C` | `0x6980` | `PolicyCommandCode` | `0x16C` | `0x93` | two u32 params |
 | `NpctVendorCmd0A` | `0x6a44` | `FlushContext` | `0x165` | `0x0A` | flush/close handle |
 | `NpctVendorCmd4C` | `0x6aec` | `PolicyGetDigest` | `0x189` | `0x4C` | reads a length-prefixed blob |
