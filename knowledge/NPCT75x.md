@@ -971,6 +971,50 @@ Every additional tool agrees with the harness verdict: the ciphertext is
 indistinguishable from random and no host-derivable key exists. Physical
 access to the NPCT75x remains the only path to plaintext.
 
+### 10.12 Firmware-packing scheme, EK surface and framing audit (2026-11-20)
+
+A follow-up pass checked whether the "offline is closed" verdict overlooked a
+different firmware-packing scheme or a key-bearing host artifact.
+
+**FIPS 140-3 service table (policy 140sp5171, firmware 7.2.5.1, §4.3):** the
+`NTC_FIELD_UPGRADE` service is explicitly `AES CTR` + `ECDSA SigVer`, role
+Object Administrator, with *Firmware Update Keys (ECC)* and *Firmware Update
+Keys (AES)* both marked `E` (execute). Table 6 stores both as `Flash:Obfuscated`
+and zeroises both on `Clear TPM`; the ECC key's "Used With" field names the
+AES key and vice versa. The older policy (140sp3187, 7.2.0.x) instead describes
+a 2048-bit RSA firmware-update key verifying a SHA-256 signature — consistent
+with the 256-byte setup blob being an RSA-2048 signature in our 7.2.2.0/7.2.0.2
+packages. Nuvoton's `CryptoTool` (AN_0045) uses ECDH + AES-CFB for NuMicro OTA;
+CFB was tested below even though the TPM service table says CTR.
+
+**Live EK surface:** `tpm2_getcap handles-nv-index` returns only
+`0x01802006`, `0x1C00002` (RSA EK cert) and `0x1C0000A` (ECC EK cert). Both
+certs read with empty auth and are issued by `CN=NPCTxxx ECC384 LeafCA 022110`.
+The ECC leaf is P-256, the RSA leaf is 2048-bit; these are endorsement keys,
+distinct from the firmware-update keys. There are no persistent or transient
+objects, and no EC point (P-256 or P-384) anywhere in the 256-byte setup blob.
+
+**Framing audit:** `tools/fw_reframe.py` makes the per-chunk layout explicit —
+16-byte fixed header `00 00 00 1c 00 00 00 10 00 00 00 10 00 00 00 10`,
+16-byte random IV, big-endian `len(ct)+10`, ciphertext, 10-byte tag — verified
+over 252/252 and 261/261 writes. This does **not** overturn the earlier crypto
+results: `fw_deep_analysis._load()` and `fw_crypto_harness` already extract
+`cmd.params[36:-10]`; `DevCapScript.firmware` returns the full framed body
+(`params[16:]`), a different representation. Re-running AES-CTR/CBC/CFB/OFB on
+the explicit stream with all 15,676 derived keys still gave zero hits, as did
+AES-CFB at segment sizes 8/16/32/64/128 and a fresh sweep of 34 whole-artifact
+hashes. Blob-derived KDFs (SHA-256/512, MD5, HMAC with `NovemberRain`, PBKDF2,
+IV combinations) and IV-as-key variants were also negative.
+
+**Other dead ends:** the Dell `DELLTPM_NPCT750_X10_7.2.3.1_64_v1.exe` utility
+(SHA-256 `4ad47d120ab3d0895d695b9701957f081a9e3904e9b9811d837f78826e7f472f`)
+contains only Dell PFS platform-firmware capsules, no TPM blob. The embedded
+driver's SHA-256 constants are at PE offset `0x380`; there is no AES S-box.
+
+The service table's `AES CTR` + manufacturing-installed, obfuscated keys —
+not extractable via any standard or discovered vendor command — confirms the
+earlier conclusion. Software-only decoding remains closed.
+
 ---
 
 ## 10. Open questions

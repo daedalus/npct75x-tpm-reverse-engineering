@@ -84,6 +84,12 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   `networkx` byte-transition graph, an optional `torch` next-byte predictor,
   all five AES modes over 15,676 keys, and HMAC/CRC tag checks. §10.11.
 
+* `python3 tools/fw_reframe.py` emits the pure per-chunk ciphertext stream and
+  JSON metadata (IV, length, tag) for both packages, making the framing
+  `16B fixed header | 16B IV | BE len | ct | 10B tag` explicit. It is an audit
+  aid, not a fix — the crypto harnesses already strip the framing correctly.
+  §10.12.
+
 ## Safety model
 
 * Every command goes through an explicit read-only allowlist.
@@ -253,4 +259,4 @@ See [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md) for detailed observations.
 
 ---
 
-*Last updated: 2026-11-19*
+*Last updated: 2026-11-20*
