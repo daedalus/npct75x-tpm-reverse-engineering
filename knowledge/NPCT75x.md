@@ -921,6 +921,51 @@ Verdict: **no exploitable structure in the host artifacts**. This is the
 consolidated negative result; the remaining gap is still the manufacturing
 AES key inside the NPCT75x, reachable only with physical chip access.
 
+### 10.11 Exhaustive external tools and deep Python modules (2026-11-20)
+
+Two further scripts widen the net beyond the harness.
+
+`tools/fw_tool_sweep.py` — 246 captures across every available external
+binary, in several modes each: `file`, `binwalk -B/-A/-E/-I/-e`, `strings`
+(lengths 4/6/8, decimal offsets, UTF-16LE and UTF-16BE), `xxd` and `hexdump`
+and `od` head/tail, `md5sum`/`sha1sum`/`sha256sum`/`sha512sum`/`cksum`,
+11 `openssl dgst` algorithms (MD5 through SM3), `exiftool`, `unzip -l`,
+`7z l`, `objdump -x/-d/-s/-p`, `nm`, `readelf`, `gdb -batch`, gzip/bzip2/xz/
+zstd integrity tests, and a `z3` SMT-LIB solve of the nonce LCG constraints.
+Output: `out/firmware/analysis/sweep/<tool>/<artifact>.txt` plus
+`tool_sweep_report.txt`. Results: `binwalk` sees only the embedded PE driver
+and SHA-256 constants inside the *containers*, nothing inside the ciphertext
+streams; all four decompression tests fail as expected; `z3` returns `unsat`
+for a 128-bit LCG fitted to four consecutive nonces, confirming the
+algebraic result in §10.10.
+
+`tools/fw_deep_analysis.py` — the full local Python stack:
+
+* `scipy.stats`: chi-squared p=0.45/0.12 (df 255), Spearman(index, byte)
+  r≈0 (p>0.87), entropy 7.9992. KS and normality tests reject, but they are
+  inapplicable here: KS assumes a continuous distribution and byte values are
+  discrete; uniform-discrete data is deliberately non-normal.
+* NIST SP 800-22 subset: monobit z −0.95/−1.56, block-frequency chi² 13,953
+  over 14,080 blocks and 14,737 over 14,592 blocks (≈1 per block), longest
+  run of ones 22/19, serial chi² 1.8/3.4 at m=2 and 3.4/7.5 at m=3 — all
+  within acceptance regions.
+* `sympy`/`gmpy2`: both setup blobs are 2046–2048-bit composites, not prime;
+  gcd is 2; one has small factors 5 and 23, which is the expected frequency
+  for random 2048-bit integers, not a key-structure signal.
+* `mmh3`/`xxhash`/`blake3`/`hashlib` and HMAC-SHA1/256/384, CRC32 and adler32
+  over 15,676 keys: zero matches for any of the 513 ten-byte tags.
+* `capstone` disassembly of the embedded UEFI DXE driver's `.text`, and
+  `networkx` byte-transition graphs (63,432/63,680 of 65,536 possible edges,
+  one strongly connected component, balanced out-degrees 239–255).
+* `torch` next-byte MLP: 0.44% test accuracy versus the 0.3906% random
+  baseline (≈0.8σ for 10k test samples) — the stream is not learnable.
+* `pycryptodome` AES-ECB/CBC/CFB/OFB/CTR over all 15,676 derived keys: zero
+  decryptions with entropy below 7.5.
+
+Every additional tool agrees with the harness verdict: the ciphertext is
+indistinguishable from random and no host-derivable key exists. Physical
+access to the NPCT75x remains the only path to plaintext.
+
 ---
 
 ## 10. Open questions

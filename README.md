@@ -71,6 +71,18 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   tools. Reports land in `out/firmware/analysis/harness/`
   (`harness_report.txt` + JSON). Current verdict: no exploitable structure.
   §10.10.
+* `python3 tools/fw_tool_sweep.py` runs **every available external binary** in
+  multiple modes — `file`, `binwalk` (`-B`/`-A`/`-E`/`-I`/`-e`), `strings`
+  (4 encodings, 3 minimum lengths, offsets), `xxd`, `hexdump`, `od`, 11
+  `openssl dgst` hashes, 5 checksum utilities, `exiftool`, `unzip`, `7z`,
+  `objdump`, `nm`, `readelf`, `gdb`, gzip/bzip2/xz/zstd integrity tests, and
+  a `z3` SMT-LIB nonce-LCG solve. 246 captures land under
+  `out/firmware/analysis/sweep/`.
+* `python3 tools/fw_deep_analysis.py` brings the full Python stack:
+  `scipy.stats`, a NIST SP 800-22 subset, `sympy`/`gmpy2` setup-blob analysis,
+  `mmh3`/`xxhash`/`blake3` tag checks, `capstone` driver disassembly,
+  `networkx` byte-transition graph, an optional `torch` next-byte predictor,
+  all five AES modes over 15,676 keys, and HMAC/CRC tag checks. §10.11.
 
 ## Safety model
 
