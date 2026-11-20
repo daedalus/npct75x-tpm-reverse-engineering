@@ -882,6 +882,45 @@ plaintext correlate exists in the host artifacts. The earlier "structure" was
 entirely the DevCap framing. This closes the sliding-window differential
 avenue; it adds no key material.
 
+### 10.10 Unified offline cryptanalysis harness (2026-11-20)
+
+`tools/fw_crypto_harness.py` is the single entry point that reproduces every
+offline avenue that has been tried against these images. It runs 14 checks in
+four tiers and writes `out/firmware/analysis/harness/harness_report.txt` and
+`.json` plus per-tool artifacts. It is strictly offline: no TPM commands and
+no firmware-update replay.
+
+* **environment** — inventories `binwalk`, `strings`, `openssl`, `objdump`,
+  `gdb`, `z3`, and the Python modules (`numpy`, `scipy`, `pycryptodome`,
+  `cryptography`, `capstone`, `elftools`, `asn1crypto`, `matplotlib`,
+  `pandas`). Orchestrated tools are pinned to `/usr/bin/python3`, which is the
+  interpreter with the full crypto stack (the venv has only numpy).
+* **statistical** — byte chi-squared, Shannon entropy, IC, eight bit-plane
+  balance z-scores, byte autocorrelation at lags 1–16, bit-level runs test,
+  zlib compression ratio, and magic-signature counts scored as Poisson
+  collisions (a naive 2-byte-magic scan falsely "finds" zlib/PE in random
+  data; requiring z > 5 removes that).
+  Results: entropy `7.999176`/`7.999132`, IC `0.003906`/`0.003907`,
+  chi-squared `257`/`281` (df 255), all bit z within ±2.8, all autocorrelations
+  within ±0.005, runs z `+0.06`/`+0.10`, compression ratio `1.00034`,
+  zero above-chance signatures.
+* **structural** — nonce counter/128-bit-LCG/hash-chain fit (none across 252
+  and 261 nonces), per-tag byte entropy `7.11–7.28` with no `sha256(ct)[:10]`
+  relation, framing parse (constant 16-byte header, all nonces unique), and a
+  derived-key sweep of **15,718 unique keys** (NovemberRain variants, NV auth,
+  setup-blob windows, DevCap header windows, string hashes) with **zero**
+  AES-CTR decryptions below entropy 7.5.
+* **external** — `binwalk` finds only the embedded PE driver and SHA-256
+  constants in the *containers*, nothing in the ciphertext streams; `strings`
+  finds no plaintext in the streams; `openssl dgst` records trailer digests.
+* **orchestrated** — re-runs `fw_crypto_audit.py`, `fw_cross_version.py` and
+  `fw_slide_xor.py` so one command reproduces all three previously separate
+  reports.
+
+Verdict: **no exploitable structure in the host artifacts**. This is the
+consolidated negative result; the remaining gap is still the manufacturing
+AES key inside the NPCT75x, reachable only with physical chip access.
+
 ---
 
 ## 10. Open questions

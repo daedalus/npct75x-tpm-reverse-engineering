@@ -63,6 +63,14 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   `0`/`±1`/`±926`). On pure ciphertext the equality z-score is a perfect random
   null (std 1.001, max 4.85), best window is 11/512 zero bytes, and the longest
   exact shared run is 0 — no keystream reuse or shifted copy. §10.9.
+* `python3 tools/fw_crypto_harness.py` runs the whole offline audit in one
+  command: tool inventory, byte/bit randomness (chi-squared, bit-plane z,
+  autocorrelation, runs), compression, above-chance magic signatures, nonce
+  counter/LCG/hash-chain checks, tag statistics, a 15,718-unique-key AES-CTR
+  sweep, binwalk/strings/openssl, and orchestrated re-runs of all three `fw_*`
+  tools. Reports land in `out/firmware/analysis/harness/`
+  (`harness_report.txt` + JSON). Current verdict: no exploitable structure.
+  §10.10.
 
 ## Safety model
 
