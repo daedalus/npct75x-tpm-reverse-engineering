@@ -1494,13 +1494,54 @@ Continued recursive extraction of all 30 files in
 **Net effect:** offline key/auth recovery remains closed. No live action is
 authorized.
 
+### 9.18 Read-only hardware re-probe after S3 recovery (2026-11-20)
+
+With the TPM recovered and no new live authorization, a strictly read-only
+dossier was collected from `/dev/tpmrm0`. Key results:
+
+* **NV space** is exactly three indices: `0x01802006` (16 bytes, **all zero**
+  when read with the derived `NovemberRain` digest) and the RSA/ECC EK
+  certificates at `0x01C00002` (861 B) / `0x01C0000A` (659 B). No persistent
+  or transient object handles exist; `GetCapability(CAP_HANDLES)` returns
+  empty for both ranges, so there is no hidden key object to load.
+* **Property scan**: every property `0x000..0x500` was queried individually;
+  67 returned data, all inside the documented fixed (`0x1xx`) and variable
+  (`0x2xx`) ranges. No vendor-specific TPM properties exist outside
+  `CAP_VENDOR_PROPERTY = 0x100`.
+* **`ReadClock`**: `time = 86,747,795 ms`, `clock = 86,005,306 ms`,
+  `resetCount = 2`, `restartCount = 0`, `safe = 1`. The S3 recovery therefore
+  left the chip with two lifetime resets.
+* **New correlation — vendor property 1 is the `GetTestResult` diagnostic
+  counter.** The u16 big-endian field at offset 13 of the 225-byte Nuvoton
+  diagnostic blob (§10.7) and `VENDOR_PROP_0x00000001` were sampled together
+  five times and matched **exactly** on every sample:
+  `0x12F0 → 0x12F0 → 0x12F2 → 0x12F2 → 0x12F2`. They increment in lockstep
+  in short bursts, then hold. This resolves the "what drives property 1"
+  question: it is a firmware-internal diagnostic counter exposed through two
+  read-only interfaces, not a command counter, wall clock, or nonce.
+* **Both interfaces changed across the reset boundary.** The earlier
+  baseline recorded `PROP1 = 0x001AD0A0` and `PROP2 = 0x00004BF0`; current
+  readings are `PROP1 ≈ 0x12F2` and `PROP2 = 0x6060`. The diagnostic blob's
+  offset-13 field likewise moved from `0x10BC` to `0x12F0` while the rest of
+  its structure was preserved. `PROP2` remains static within a session; its
+  meaning is still unknown, but it is not a constant burn-in value.
+* **Baseline vendor reads unchanged**: `0x20000204 → 0200001a`,
+  `0x20000213 → ffffa700fbff7ffffbfffffffbf0ffffaaaa`,
+  `0x20000216 → (empty)`, all `rc=000`.
+
+No auth-bearing material was found. The correlation narrows the vendor
+property semantics but does not move the PLATFORM authValue problem.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
    confirmed live: `SHA256(UTF-16LE("NovemberRain\0"))` =
    `4a2a5d8442d17e746f46ed1d990ee2213250e04005bbded804565ecfdab0afdf`.
    `NV_Read` with this auth returns 16 bytes; empty password returns BAD_AUTH.
-1. What do vendor properties `0x0..0x2` mean, and what drives property 1?
+1. ~~What drives vendor property 1?~~ §9.18 shows it is the same diagnostic
+   counter exposed at offset 13 of the `GetTestResult` blob; both increment
+   in lockstep. Properties 0 (always `0`) and 2 (session-static, currently
+   `0x6060`) remain unexplained.
 2. What do vendor commands `0x20000200..0x20000216` do? Which are read-only?
    §8.1 adds `0x2000012f`, statically identified as a vendor
    `FieldUpgradeStart`; it is state-changing and unprobed.
