@@ -6,7 +6,7 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 
 ## Current status (2026-11-19)
 
-* Offline suite: **96 tests pass** (`python3 -m pytest tests/ -q`).
+* Offline suite: **97 tests pass** (`python3 -m pytest tests/ -q`).
 * NV `0x01802006` auth is **statically derived and live-confirmed**:
   `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
   [`tpm_re/nvauth.py`](tpm_re/nvauth.py). `NV_Read` with this auth returns 16
@@ -25,10 +25,17 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   257-command vendor replay script; `0x20000200/201/202/203` are
   setup/erase/write/commit, and the 252 `0x20000202` chunks yield the
   **232,840-byte NPCT75x 7.2.2.0 firmware stream** (SHA-256 `6659e5c5…2ca16`).
-  See `knowledge/NPCT75x.md` §7.2–7.3.
+  See `knowledge/NPCT75x.md` §7.2–7.4.
+* Each chunk frames a 16-byte IV/nonce, a big-endian `u32` length and a 10-byte
+  trailer; 225,280 bytes of actual firmware remain — exactly the erase range.
+  Known-plaintext/XOR/ECB/AES key search and CCM/GCM tag verification all
+  failed: the key is TPM-internal. Reports: `out/firmware/analysis/`.
 * `python3 -m tpm_re devcap NuvotonTpmDevCap.BIN --extract FW.bin` parses this
   script offline. The `0x20000202` wedge is explained: the probe sent 16 bytes
   where the script always sends 942.
+* `python3 tools/fw_crypto_audit.py FW.bin DEVCAP.BIN OUTDIR` reproduces the
+  portion dumps and the cleartext audit (repeating-key XOR, known plaintext,
+  ECB, container key search).
 
 ## Safety model
 

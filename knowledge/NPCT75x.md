@@ -538,6 +538,46 @@ the final 256 bytes of the `0x20000200` setup params (offset 302) and the
 256-byte file trailer are the signature region. Neither has been verified
 against the extracted stream yet.
 
+### 7.4 Chunk framing and known-plaintext attack on the encrypted stream
+
+Dumping the stream (head/tail/mid and single-chunk files under
+`out/firmware/analysis/`) exposed structure invisible in a flat hexdump: the
+stream contains **257 occurrences of `00 00`** where 232,840 random bytes
+would give ~3.6. All 252 of them sit at offset 16 of a chunk and are the first
+two bytes of a big-endian `u32` length:
+
+```
+0x20000202 params (942 B):  00 00 00 1c | 00000010 00000010 00000010  (16 B fixed)
+                             + 16 B random-looking prefix
+                             + u32 BE length = 906 (or 394 for the final chunk)
+                             + 906 (or 394) bytes of payload
+```
+
+`u32 == len(chunk) - 20` holds for all 252 chunks. Accounting for a further
+**10-byte trailer** per chunk gives `251*(926-30) + (414-30) = 225280 =
+0x37000`, *exactly* the total of the three `0x20000201` erase ranges. The
+framing is therefore 16-byte IV/nonce + 4-byte length + 896-byte ciphertext +
+10-byte tag (10 is a legal AES-CCM tag length). All 252 prefixes and all 252
+trailers are unique; none chains from the previous chunk by SHA-256, MD5 or
+last-16-bytes.
+
+A cleartext attack was run (`out/firmware/analysis/report.txt`, `report2.txt`):
+
+| Attack | Result |
+|---|---|
+| Repeating-key XOR, periods 1–64 (Hamming + index of coincidence) | No structure: Hamming 3.91–4.05 bits/byte, IC 0.003912–0.003922 everywhere |
+| Frequency-derived XOR keys, all 64 periods | Entropy stays 7.9973–7.9990 |
+| Known plaintext (zeros, `0xff`, `NPCT75x`, `7.2.2.0`, version bytes, 8051 `LJMP`, ARM SP, gzip, zlib, ELF) | Entropy 7.9990–7.9991 for all; no key shorter than the header survives |
+| Repeated 16-byte blocks (ECB oracle) | 14,552 blocks, all 14,552 unique |
+| XOR / AES-ECB / AES-CTR with 15,308 keys sliced from setup, commit, script and trailer | Best entropy 7.9365 — random variation, no hit |
+| AES-CCM `mac_len=10` and AES-GCM tag verification, 614 `NovemberRain`/setup/commit-derived keys × 7 nonce lengths × AAD variants | 12,280 combinations, **zero** tag-verified decryptions |
+| Compression signatures in first 256 bytes | None |
+
+Conclusion: the key is **internal to the TPM** (fuse/ROM-derived), and the
+package contains only ciphertext plus a 256-byte signature. The framing is now
+fully decoded, but offline decryption is not feasible from this artifact
+alone.
+
 ---
 
 ## 8. NV `0x01802006` access chain — standard TPM commands only

@@ -68,6 +68,19 @@ class DevCapScriptTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(script.firmware).hexdigest(),
                          "6659e5c55beb02bf55ecb818b7cb9288e59e7cd5e4ee6f0254f7e0b37b42ca16")
 
+    def test_chunk_framing_matches_erase_range(self):
+        path = Path("/tmp/opencode/fwpkg/extracted/nuvoton/NuvotonTpmDevCap.BIN")
+        if not path.exists():
+            self.skipTest("Lenovo Nuvoton package not downloaded")
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import fw_crypto_audit
+
+        chunks = fw_crypto_audit.parse_devcap_chunks(path.read_bytes())
+        self.assertEqual(len(chunks), 252)
+        self.assertTrue(all(struct.unpack(">I", c[16:20])[0] == len(c) - 20
+                            for c in chunks))
+        self.assertEqual(sum(len(c) - 30 for c in chunks), 0x37000)
+
 
 if __name__ == "__main__":
     unittest.main()
