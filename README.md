@@ -18,8 +18,11 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 * `python3 -m tpm_re ami FILE --extract FW.bin` parses such a capsule offline.
 * Vendor command `0x2000012f` is statically identified as a Nuvoton variant of
   `FieldUpgradeStart`; it is state-changing and has not been probed live.
-* The TPM is operational again (`/dev/tpm0`, `MSFT0101:00`); the recovery
-  attempts that failed earlier are recorded in `knowledge/NPCT75x.md` §6.1.
+* **The TPM is wedged again (2026-11-20).** Authorized live FUM probing
+  confirmed CC `0x20000200` needs an unknown PLATFORM authValue and a blind
+  1-byte selector sweep on `0x20000214` wedged the chip. Writes to `/dev/tpm*`
+  return `EINVAL`, reads time out. No write/commit/reboot was sent; external
+  hardware restoration is again required. See `knowledge/NPCT75x.md` §10.15.
 * A public Lenovo Nuvoton firmware package was fetched with provenance. Its
   `NuvotonTpmDevCap.BIN` uses a **DevCap** container (not `AMI `) holding a
   257-command vendor replay script; `0x20000200/201/202/203` are

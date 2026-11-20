@@ -1105,6 +1105,46 @@ Consequently every offline decoding route is exhausted. A plaintext dump now
 requires either a key leak from Nuvoton, a decrypted image published elsewhere,
 or authorized physical extraction from the NPCT75x package.
 
+### 10.15 Authorized live FUM experiments — second wedge (2026-11-20)
+
+After the offline routes above were exhausted, live FUM probing was explicitly
+authorized. The goal was a decryption/read-back oracle; **no erase, write,
+commit, `0x2000012f`, `0x20000211` or full DevCap replay was ever sent.** All
+experiments used CC `0x20000200` (setup) or the read-only vendor commands.
+
+* **Bare DevCap setup is not a wire command.** The stored 312-byte command
+  (`tag=0x8001`, SHA-256 `02407501…`) has no handle, and returns
+  `rc=0x184 VALUE (handle 1)`. The real tool injects a handle and an auth area.
+* **Setup requires PLATFORM.** With handle `0x4000000C` and an empty
+  `TPM_RS_PW` session (SHA-256 `3cb30cc8…`) the answer is `rc=0x9A2 BAD_AUTH
+  (session 1)`. All other handles (`0x40000001`, `0x4000000B`, `0x4000000D`,
+  `0x4000000A`, `0x4000000C`, `0x81000000`, `0x01802006`) return
+  `VALUE (handle 1)`, so `0x4000000C` is mandatory and its authValue is
+  non-empty.
+* **The PLATFORM authValue is unknown.** Correctly formed HMAC password
+  sessions using the NovemberRain NV digest, its ASCII/SHA-256 forms, 32 zero
+  bytes and the setup digest, across four cpHash layouts and three attribute
+  bytes, all return `rc=0xA84 VALUE (session 2)`, i.e. HMAC rejected. Guessing
+  the secret was abandoned.
+* **Read commands expose nothing.** `0x20000204`, `0x20000213`, `0x20000216`
+  return their fixed responses with or without handle/session; adding any
+  parameter yields `SIZE`. `0x20000214` is a 1-byte selector: bare →
+  `INSUFFICIENT (parameter 1)`, one byte → `COMMAND_CODE`, two or more → `SIZE`.
+* **A blind 1-byte selector sweep on `0x20000214` wedged the TPM.** Roughly
+  halfway through the 0x00..0xFF sweep, `DeviceTransport` raised
+  `BrokenPipeError`; one selector evidently dispatched a state-changing
+  operation. The chip has not answered since: blocking writes to `/dev/tpm0`
+  and `/dev/tpmrm0` return `EINVAL (22)` and reads time out, and `tpm2_*`
+  tools report `EPERM` reading the response header. Restarting `tpm2-abrmd`
+  did not help.
+
+This is the same wedge signature as §6.1. No reboot or power cycle was
+attempted in this phase (no authorization). The previous incident recovered
+only through **external hardware restoration** — warm reboot and cold power
+cycle both failed — so that is again the expected requirement. The live FUM
+path is closed twice over: setup is gated by an unknown PLATFORM authValue and
+§10.1 establishes there is no firmware read-back command even inside FUM.
+
 ---
 
 ## 10. Open questions
