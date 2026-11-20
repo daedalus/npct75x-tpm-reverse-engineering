@@ -1015,6 +1015,44 @@ The service table's `AES CTR` + manufacturing-installed, obfuscated keys —
 not extractable via any standard or discovered vendor command — confirms the
 earlier conclusion. Software-only decoding remains closed.
 
+### 10.13 RSA blob analysis: no modulus, so no related-message attack (2026-11-20)
+
+The 256-byte setup blob was tested as the RSA artifact suggested by the
+FIPS 140-2 policy. A second, previously unexamined 256-byte blob was found in
+the `0x20000203` commit command of each package (`u32 256` at offset 58,
+followed by the blob), giving four RSA-sized values.
+
+`tools/fw_rsa_analysis.py` reproduces all checks offline:
+
+* **Not moduli.** The four blobs are 2046–2048-bit random-looking values, three
+  are even and two have small factors (5, 23, 11, 29, 43). Pairwise GCDs are
+  1–3 bits: no shared 2048-bit modulus.
+* **Setup-as-modulus fails.** `pow(commit, e, setup)` for `e` in 3, 17, 65537,
+  same- and cross-package, gives no PKCS#1 v1.5 `00 01 ff…ff 00` prefix in any
+  of 12 combinations. The setup blob is therefore not the firmware-update
+  public modulus.
+* **Modulus-from-signatures fails.** `gcd(s1**e - m1, s2**e - m2)` over all
+  blob pairs, `e` in 3, 17, messages = SHA-256 of DevCap / firmware stream /
+  setup / version table / commit-body, PKCS#1-DigestInfo and raw encodings:
+  zero 2040–2060-bit candidates.
+* **Same-message randomized padding fails.** If two blobs signed the identical
+  padded message, `n` would divide `s1**e - s2**e`; gcd across disjoint pairs
+  produced no 2048-bit factor at `e` = 3 or 17.
+* **`rsakeyfind` (Halderman/Heninger RSAKeyFinder 1.0)** found no BER-encoded
+  RSA private/public key in any artifact (both DevCaps, both firmware streams,
+  reframed stream, DXE driver `.text`, EK certs, updater EXEs/SYS,
+  `section1.pe`). A further 6,662 odd 2048-bit no-small-factor windows in the
+  updater binaries, tested as candidate `n` against all four blobs at `e` = 3
+  and 65537, produced zero PKCS#1 hits.
+
+A Franklin–Reiter related-message attack requires two RSA *encryptions*
+`c1 = m1**e mod n`, `c2 = m2**e mod n` under a **known** modulus `n` with a
+known affine relation `m2 = a*m1 + b`. Here the blobs are RSA *signatures*
+`m**d mod n` under a manufacturing-installed key, `n` is unpublished and
+obfuscated in TPM flash, and no candidate `n` exists in any host artifact. The
+prerequisite is absent, so the attack is inapplicable. Firmware decoding stays
+closed without physical extraction.
+
 ---
 
 ## 10. Open questions

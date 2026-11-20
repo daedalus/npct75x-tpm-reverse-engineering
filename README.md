@@ -90,6 +90,12 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   aid, not a fix — the crypto harnesses already strip the framing correctly.
   §10.12.
 
+* `python3 tools/fw_rsa_analysis.py` extracts both 256-byte blobs per package
+  (setup + commit) and tests whether the firmware-update RSA modulus can be
+  recovered (setup-as-modulus, signature gcd, same-message padding, blob
+  properties). All negative: no `n`, so a related-message attack is
+  inapplicable. §10.13.
+
 ## Safety model
 
 * Every command goes through an explicit read-only allowlist.
