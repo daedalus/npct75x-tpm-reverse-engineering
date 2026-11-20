@@ -1365,6 +1365,31 @@ function of the nonce and live TPM randomness, no TPM command reads a hierarchy
 authValue back, and the cached digest is not exposed to Linux. Every offline
 route remains closed and no live policy action is authorized.
 
+### 9.15 FV2_main.bin decompilation (2026-11-20)
+
+Loaded the 16 MiB M47KT41A BIOS's `FV2_main` segment (`0x6f3000`,
+`0x6fe000` B, SHA-256 `482e5dcbc595fee524c87cd4f5088ea0fc65d5b21dc890244706d802982afc80`)
+into Ghidra and decompiled all 158 auto-detected functions. It is **not** the
+TPM FMP driver and contains no TP-related material:
+
+* Two embedded Windows kernel USB-filter drivers (`x86`/`x64` `usbf.sys`,
+  PDB `D:\bussnessSoft\SmartUsb\SourceCode\usbfilter\product\{x86,x64}\usbf.pdb`),
+  which expose an SMM-communication interface:
+  `BtdGetACPISmmCommTbl` (`0xd6ac`, RSDP → RSDT → "UEFI" table walk),
+  `BtdSmmCommBufferAccessRev2` (`0xdb18`),
+  `CompareSmmCommTableGuid` (`0xdc94`), and
+  `TriggerSmiViaIoPort` (`0x930c`, raw `out` to the SMI port).
+* A large EDK2/Phoenix `securewipe2.144` UEFI application with OPAL/ATA/NVMe
+  erase, password prompts, PNG/GIF/JPEG decoders and GUI code (build paths
+  `d:\sct\securewipe2.144\...`).
+* Keyword scans for `tpm`, `Nuvoton`, `NovemberRain`, `TpmFmp`, `TCG` (only
+  `TCG OPAL`, a storage standard), `PCR`, `Seal`, `NV index`, `GetRandom`,
+  `PlatformAuth` returned nothing relevant.
+
+No TPM, Nuvoton, policy-auth, or key material. The `section1.pe`
+`TpmFmpUefiDrv` remains the correct Ghidra program for the auth work; the
+`FV2_main.bin` renames above are local Ghidra-database changes only.
+
 ## 10. Open questions
 
 0. ~~What is the auth value for NV `0x01802006`?~~ Answered in §6 and
