@@ -738,6 +738,51 @@ SOIC/DFN chip programmer, a vendor JTAG/debug port, or fault injection. None
 of those is present. No further host command or offline attack against the
 captured package can produce plaintext.
 
+### 10.6 Can the TPM be made to present a JTAG/SPI/I²C debug port?
+
+No — not from the host, by software. Four independent sources agree:
+
+* The FIPS 140-2 policy for NPCT7xx (`140sp3187.pdf`, §3, Table 7) lists only
+  SPI bus, PP pin, platform reset and power as physical ports and states
+  "The Module does not include a maintenance interface." The FIPS 140-3
+  policy for hardware `0x00FC` (`140sp5057.pdf`) lists SPI, I²C, GPIO,
+  power management and host interfaces only. The CC security target
+  (`st2017.txt`, pp. 14–17) describes 28/32 pins: power/ground, SMBus/I²C,
+  SPI, physical presence and GPIO. No JTAG, SWD or test-access port is
+  documented in any of them.
+* The only host-visible bus on this machine is LPC TIS:
+  `/sys/class/tpm/tpm0/device` resolves to `platform/MSFT0101:00` with the
+  `tpm_tis` platform driver. There is no `/dev/spidev*` and no TPM on any
+  enumerated I²C bus.
+* `0x20000211` (`NTC2_PreConfig`) writes the 18-byte `CFG_STRUCT`
+  (`Base0`/`Base1` = I²C location, `GpioAltCfg`, `GpioInitValue`,
+  `GpioPullUp`, `GpioPushPull`, `Cfg_A`..`Cfg_J`, `isValid`, `isLocked`).
+  NPCT75x has only GPIO3 and GPIO4, and wolfTPM §16.2.2 documents them as
+  **output-only** (push-pull, open-drain, open-drain with pull-up). There is
+  no debug alternate function and no input mode, so the GPIOs cannot become
+  a JTAG/SPI/I²C port. The live `Cfg_H=0xf0` already has SPDM enabled and
+  `isLocked=0xaa`; the command needs PLATFORM auth and remains gated.
+* SPDM (`GET_PUBK`, `GIVE_PUB`, `TPM2_CMD`, `GET_STS_`, `SPDMONLY`) only
+  wraps the same TIS commands in AES-256-GCM on the same bus. It adds
+  confidentiality, not a new interface. The nine vendor commands are
+  update/config/query only; none reads flash, RAM or registers. Loading
+  custom debug firmware is blocked by ECDSA-P384 verification of update
+  images (FIPS 140-3 §4.5), and Booter/CrypLib are ROM.
+
+Toggling host GPIO4 would only reset the TPM on a Nuvoton SBC daughter
+board; there is no evidence it is wired on this ThinkCentre. The debug-port
+route therefore reduces to the same physical requirement as §10.5.
+
+### 10.7 Read-only diagnostic surface: `TPM2_GetTestResult`
+
+`tpm2_gettestresult` is the one device-side command we had not exercised.
+Live it returns `status: success` plus a 225-byte Nuvoton diagnostic blob
+(`aa55 0000 0000 01 fe 01 00 04 00 ...`), mostly a run of big-endian u32
+values in `0x29`–`0x34` followed by a short binary tail. Entropy is `2.35`
+with 34 distinct byte values — a structured test record, not a memory dump.
+No firmware marker, signature or recognizable code. Captured at
+`out/firmware/analysis/gettestresult.{bin,hex}`.
+
 ---
 
 ## 10. Open questions

@@ -47,6 +47,11 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   the chip (programmer, JTAG or fault injection), which is not available.
   Host-side paths (`/dev/mem` under `STRICT_DEVMEM`, `/dev/spidev`, I²C, EFI
   variables, NV indices) were checked and ruled out — §9 for details.
+* The TPM cannot be reconfigured from the host into a JTAG/SPI/I²C debug
+  port: the certified part defines no maintenance interface, NPCT75x GPIOs
+  are output-only, and SPDM only encrypts the same TIS traffic. §10.6 has the
+  source cross-references. A read-only `TPM2_GetTestResult` probe returned a
+  225-byte diagnostic record, not a memory dump (§10.7).
 
 ## Safety model
 
