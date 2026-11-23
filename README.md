@@ -4,9 +4,9 @@
 
 The toolkit was written while reverse engineering the discrete TPM in a Lenovo ThinkCentre M75q Gen 2 (Nuvoton **NPCT75x**, firmware **7.2**). The observed facts and the open questions live in [`knowledge/NPCT75x.md`](knowledge/NPCT75x.md).
 
-## Current status (2026-11-20)
+## Current status (2026-11-23)
 
-* Offline suite: **115 tests pass** (`python3 -m pytest tests/ -q`).
+* Offline suite: **119 tests pass** (`python3 -m pytest tests/ -q`).
 * NV `0x01802006` auth is **statically derived and live-confirmed**:
   `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
   [`tpm_re/nvauth.py`](tpm_re/nvauth.py). `NV_Read` with this auth returns 16
@@ -19,6 +19,13 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   `tpm2_getpolicydigest` values. This does **not** open an authorization path:
   PLATFORM has a non-empty authValue but an empty authPolicy, so policy
   sessions return `AUTH_UNAVAILABLE` (see knowledge §9.15).
+* The missing PLATFORM authValue has a **third, plaintext path**: the driver's
+  `Tpm20ResetEmptyPlatformAuth` fallback reads a raw password string from an
+  AMI-private record (GUID `f5b640aa…`, `u16` length @0x10, bytes @0x12) and
+  submits it directly as the TPM2B authValue in vendor command `0x93`. The
+  record is not in the dumped NVAR store, so the value is still unknown
+  (knowledge §9.21). A read-only SPI dump *did* recover the previously
+  "absent" `TpmFwUpdRollNonce` (§9.20); parser in `tpm_re/nvram.py`.
 * The BIOS image contains **AMD fTPM**, not NPCT75x firmware. The AMI FMP
   driver is a version-reporting/capsule-dispatch shim; its `SetImage` path and
   the `AMI ` capsule layout are decoded in section 7.1 of the knowledge file.
@@ -58,7 +65,11 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
   upgrade never exposes plaintext; a dump therefore needs physical access to
   the chip (programmer, JTAG or fault injection), which is not available.
   Host-side paths (`/dev/mem` under `STRICT_DEVMEM`, `/dev/spidev`, I²C, EFI
-  variables, NV indices) were checked and ruled out — §9 for details.
+  variables, NV indices) were checked and ruled out — §9 for details. The
+  SPI **flash** mapping at `0xFF000000` is a separate read-only surface: a
+  live 16 MiB dump recovered the hidden AMI NVAR store and the previously
+  "absent" `TpmFwUpdRollNonce` (§9.20, `tpm_re/nvram.py`). It does not expose
+  TPM-internal firmware or keys.
 * The TPM cannot be reconfigured from the host into a JTAG/SPI/I²C debug
   port: the certified part defines no maintenance interface, NPCT75x GPIOs
   are output-only, and SPDM only encrypts the same TIS traffic. §10.6 has the
@@ -250,6 +261,25 @@ sigrok-cli -i capture.sr -P spi:cs=D0:clk=D1:mosi=D2:miso=D3 \
 python3 -m tpm_re sigrok annotations.txt --direction mosi -o command.bin
 python3 -m tpm_re frames command.bin
 ```
+
+### Reading the AMI SPI-flash NVRAM store
+
+The hidden AMI NVAR records (which include `TpmFwUpdRollNonce`) are not in
+`efivars`. As root, dump the SPI flash mapping read-only and parse it offline:
+
+```sh
+sudo dd if=/dev/mem of=spi_dump.bin bs=4096 skip=$((0xFF000000/4096)) count=4096
+python3 - <<'PY'
+from tpm_re.nvram import parse_nvar_records, roll_nonce
+blob = open('spi_dump.bin','rb').read()
+recs = parse_nvar_records(blob)
+print(len(recs), 'records;', len({r.name for r in recs}), 'unique names')
+print(roll_nonce(blob).hex())
+PY
+```
+
+This is safe and non-destructive but requires root; it reads **flash**, not
+TPM state. Do not write to `/dev/mem`. See knowledge §9.20–9.21.
 
 ## Design notes
 

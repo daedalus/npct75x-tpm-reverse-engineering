@@ -408,8 +408,10 @@ Consequences:
 * Runtime efivars contain only the generic AMI/Lenovo TPM config variables
   (`TpmServFlags`, `OldTPM20FlagData`, `TpmDefaultSetting`,
   `TPMPERBIOSFLAGS`). None of the driver's own variables (`NovemberRain`,
-  `TpmFwUpdMode`, `TpmFwUpdRollNonce`, `TpmFmp*`) are present — consistent
-  with those being runtime-only.
+  `TpmFwUpdMode`, `TpmFwUpdRollNonce`, `TpmFmp*`) are present in **efivars**.
+  §9.20 corrects the earlier inference that they are runtime-only: a live
+  SPI-flash dump shows `TpmFwUpdRollNonce` and other TPM variables in the AMI
+  NVAR store, which Linux deliberately does not expose via `efivars`.
 * `TpmFwUpdMode` is managed by two small functions using variable GUID
   `ed292d58-1ed2-422f-b685-7bce8c69edf2` (dwords `ed292d58`, `422f1ed2`,
   `ce7b85b6`, `f2ed698c`, built on the stack so it is not a contiguous
@@ -1647,6 +1649,102 @@ all prior FUM auth scripts**, not a new secret:
 unknown runtime value; the earlier `0xA84` evidence was a wire-format artifact.
 No vendor/firmware state was touched and the `0x20000213` baseline was
 unchanged before and after every batch.
+
+### 9.20 Live SPI-flash NVRAM dump — roll nonce recovered (2026-11-23)
+
+A read-only 16 MiB dump of `/dev/mem` at `0xFF000000` (root, no reboot, no
+TPM/vendor command) exposed the **live SPI flash**, including the AMI Aptio
+variable store that Linux `efivars` deliberately hides. Dump SHA-256
+`ca8f5baf7a716aa17ce486707d2a08c17c06efee02b8579d35bcbc987662c65e`
+(scratch `/tmp/opencode/spi_dump.bin`). It differs from the downloaded
+`IMAGEM47.ROM` (`115e6bf6…`) because it contains live NVRAM state.
+
+The store uses `NVAR` records: `NVAR` signature, u16 record size, 3 flag
+bytes, u16 AMI-private GUID index, NUL-terminated name, then data. 186
+distinct variable names were recovered (parser: `tpm_re/nvram.py`, 4 tests).
+
+**`TpmFwUpdRollNonce` is present twice** in the AMI NVAR store: the active
+copy at `0x2ce80` (606 records, FV `_FVH @0x21028`) holds
+
+```
+84 08 48 23 e0 e1 06 99 91 74 01 4e 27 58 d7 3a
+```
+
+and the older backup FV (`_FVH @0x41028`, 361 records) at `0x4cede` holds a
+different value, `bb178a6a7cad182081d005d6b7ec72b9`. The active FV is the
+one with the fuller record set; the backup is stale. Both FVs share identical
+headers and GUID tables, so the duplicate is a generation difference, not two
+distinct variables.
+
+This overturns the §9.19 assumption that the nonce was absent from NVRAM and
+that a zero nonce was plausible. It is a genuinely new key-bearing artifact:
+the driver's `GetRtTpmFwUpdPolicyHndl` passes this exact value as the
+`policyRef` to `PolicySecret` (verified by Ghidra decompilation at `0x3134`:
+`Tpm2PolicySecret_HmacAuth(session, NovemberRain, 0x1a, rollNonce, 0x10, …)`).
+
+Offline derivation with the recovered nonce (using the solved §9.15 digest
+layout, NV Name `000b37fc…`):
+
+```
+PolicySecret(NV, ref=rollNonce)  = d8c731ff69ef12e67ef05d5dc7164d548c427483b7a9b873576c03f968a7e3ce
+  + PolicyCommandCode(0x129)    = 0e078314711bd48ebea72780c69be77a7acdd99b321c004c4c3a1545902ce684
+```
+
+None of these appear anywhere in the flash dump, so the cached policy record
+is not stored in this NVRAM image. However, the nonce changes the policy
+inputs and therefore **reopens the offline firmware-key derivations** that
+previously assumed a zero/absent nonce. No live TPM command has been sent as
+part of this finding.
+
+Other notable NVRAM values recovered (all read-only, untested against the
+TPM): `UnlockID`/`UnlockIDCopy` 32-byte blob
+`f407182a5ea9c7241cd417a60d932279d4ddc976e3db58b7f851aa352d12220c`,
+`LmRandomNumber` 32 bytes, `CurrentPolicy` 32-byte blob
+`2257af2bf23b0d30517ffcc00447860c85ea29bb5a948645efc4bc97157d344f2b`.
+The GUIDs referenced by the driver (`0314dde5`, `f5b640aa`, `ac61fe57`)
+are stored as indices in an AMI-private table, not as inline GUID bytes.
+
+No FUM/policy state was touched: the `0x20000213` health baseline remains
+`ffffa700fbff7ffffbfffffffbf0ffffaaaa`.
+
+### 9.21 Third authorization path — plaintext authValue from an AMI record (2026-11-23)
+
+Ghidra decompilation of `Tpm20ResetEmptyPlatformAuth @0x2d18` reveals a path
+we had not previously recognised, which explains where the unknown non-empty
+PLATFORM authValue comes from and how the driver can clear it **without** a
+policy session:
+
+1. `Tpm2HierarchyChangeAuth_SetAuthBlob(0, NULL, …)` — try empty auth. On
+   this TPM it fails (`BAD_AUTH`), proving authValue is non-empty.
+2. `ReadUefiVariableByGuid @0x80e4` searches variables under GUIDs
+   `0314dde5…` / `ac61fe57…`; each record has `u32 commandCode @0x10`,
+   `u16 digestLen @0x14`, digest @0x16. If `commandCode == 0x129` and the
+   cached digest matches a freshly built policy digest, a policy session is
+   used for `HierarchyChangeAuth`. On this machine the cached record is
+   absent, so this path is skipped.
+3. **Fallback:** the driver locates records under GUIDs `0314dde5…` /
+   `f5b640aa-8701-364e-be59-0504efebc417`, reads a buffer whose layout is
+   `u16 length @0x10`, `length` bytes of *raw authValue string @0x12*
+   (max 0x40), and calls
+   `Tpm2HierarchyChangeAuth_SetAuthBlob(length, string, length)`. That helper
+   submits vendor command `0x93`, whose parameter block embeds TPM command
+   code `0x129` and the raw string bytes as a TPM2B — no hashing, no policy
+   session. On success it writes back a 0x54-byte "cleared" record
+   (`f5b640aa` GUID + zero length) so the secret is consumed.
+
+So the PLATFORM authValue is a **plaintext string held in an AMI-private
+record under GUID `f5b640aa…`**, not a derived digest. This is a genuinely
+new lead: the string is the actual password. Searching the live SPI dump for
+that record has not yet found it — the driver's GUIDs are stored as indices
+in an AMI-private table, and no `f5b640aa` bytes, no u16-length/ASCII-string
+record at the expected offsets, and no `NovemberRain` string occur anywhere
+in the flash image. It may live in the runtime-only AMI variable protocol
+rather than the NVAR store, or be generated during BIOS POST.
+
+This does **not** change the conclusion that a policy session cannot
+authorize PLATFORM: `authPolicy` is empty (§9.11). It does mean that the
+`0x9A2 BAD_AUTH` from FUM setup is a plain password check against this
+stored string. No live command was sent to test it.
 
 ## 10. Open questions
 
