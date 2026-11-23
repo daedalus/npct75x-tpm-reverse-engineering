@@ -1397,13 +1397,30 @@ vendor setup command; the only path is the unknown authValue itself. The driver'
 policy fallback would only work on a machine where provisioning had installed a
 non-empty platform policy, which this machine never did.
 
-Note: offline recomputation of the TPM's `PolicySecret` digest did **not**
-reproduce `8ba293e2…`/`a97509ad…` for any simple `H(0||CC||Name||policyRef)`
-variant tried; the TPM is authoritative and no derived digest was used to
-authorize anything. `PolicyNV` (the third link in the driver chain) could not be
-constructed — the NV index has `AUTHREAD` but no `POLICYREAD`, and raw attempts
-returned `SIZE`/`HANDLE` errors. None of this changes the conclusion, because an
-empty platform authPolicy blocks the policy route outright.
+A follow-up `strace` pass on `tpm2-tools` (2026-11-23) confirmed the raw wire
+work and refined two details:
+
+* `tpm2_policysecret` and `tpm2_policycommandcode` produce exactly the same
+  digests as the raw commands (`8ba293e2…`, then `a97509ad…`). The
+  `PolicyCommandCode` extension is reproducible offline:
+  `H(prevDigest || 0000016c || commandCode)` — from a fresh session this gives
+  `be698d8b…`, and extending `8ba293e2…` with `0x129` gives `a97509ad…`.
+  The `PolicySecret` extension `H(0 || 00000151 || …)` did not match any of the
+  tested `Name`/`policyRef` encodings, so its exact byte layout remains open,
+  but this does not affect authorization (the TPM reports the digest).
+* `tpm2_changeauth -S` is documented as an *auxiliary* session for
+  encryption/auditing, **not** the authorizing session. Running the full policy
+  chain through the tools still returned `0x9A2 BAD_AUTH` from `changeauth`,
+  confirming the tools cannot exercise the policy fallback; the raw session was
+  the correct approach.
+* A third raw test with a deliberately different policy digest
+  (`be698d8b…`, from `PolicyCommandCode` alone) also returned
+  `0x12F AUTH_UNAVAILABLE`, proving the error is independent of the digest
+  value — it is the empty platform authPolicy that blocks every policy session.
+
+`PolicyNV` (the third link in the driver chain) could not be constructed — the
+NV index has `AUTHREAD` but no `POLICYREAD`, and raw attempts returned
+`SIZE`/`HANDLE` errors. This is moot given the empty platform authPolicy.
 
 **Bottom line: the policy route is closed on this hardware.** Recovering the
 PLATFORM authValue would require physical/firmware access (SPI flash dump,
