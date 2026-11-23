@@ -1363,10 +1363,52 @@ NVRAM under `ac61fe57-…`, **not** in the 156 exported efivars (re-checked
 
 **Net effect is unchanged:** the PLATFORM auth is non-empty on this machine
 because the update path never ran; the driver would clear it to empty using a
-policy session seeded by the absent nonce. The policy digest is a one-way
-function of the nonce and live TPM randomness, no TPM command reads a hierarchy
-authValue back, and the cached digest is not exposed to Linux. Every offline
-route remains closed and no live policy action is authorized.
+policy session. No TPM command reads a hierarchy authValue back, and the cached
+digest is not exposed to Linux. Every offline route remains closed. The policy
+route was tested live on 2026-11-23 and is also closed (see below).
+
+**Correction + definitive live result (2026-11-23).** Re-reading TPM 2.0 Part 1
+§19.7 / Part 3 `PolicySecret`: `policyDigest ≔ H(policyDigest ||
+TPM_CC_PolicySecret || Name(authHandle) || policyRef)`. The `nonceTPM`, `cpHashA`,
+expiration and HMAC authorization are *not* part of the digest — the absent UEFI
+nonce affects only the authorization HMAC (`§9.14`), not `policyDigest`. This
+means the cached digest is in principle reproducible offline, and policy
+sessions were worth one live attempt. The user explicitly authorized the full
+policy flow (`PolicySecret` → `PolicyCommandCode(0x129)` →
+`HierarchyChangeAuth(PLATFORM, empty)` → FUM setup), no erase/write/commit.
+
+What was actually observed, with every transient session flushed and **no
+persistent state change** (health before/after identical
+`ffffa700fbff7ffffbfffffffbf0ffffaaaa`):
+
+| Probe | Result |
+|---|---|
+| `NV_ReadPublic(0x01802006)` | `nvPublic=01802006000b6205000500000010`, `Name=000b37fc61…2cc8e2f71`, `authPolicySize=0` |
+| Start policy session + `PolicySecret(NV)` with known NV auth | `SUCCESS`; `PolicyGetDigest = a97509ad745372145620b2d4fe0bad0510db4e375e5c68d7490a30f4af84679b` after adding `PolicyCommandCode(0x129)` |
+| `HierarchyChangeAuth(PLATFORM, empty)` via that policy session | **`0x12F AUTH_UNAVAILABLE`** |
+| Same, with a deliberately wrong **password** session | `0x9A2 BAD_AUTH (session 1)` |
+| FUM setup `0x20000200` via policy session (`PolicyCommandCode(0x20000200)`) | **`0x12F AUTH_UNAVAILABLE`** |
+
+Interpretation: `AUTH_UNAVAILABLE` ("authValue or authPolicy is not available
+for selected entity") plus `BAD_AUTH` on the password path means PLATFORM has a
+**non-empty authValue but an empty authPolicy**. No policy session — regardless
+of chain, digest, or `PolicyCommandCode` — can ever authorize PLATFORM or the
+vendor setup command; the only path is the unknown authValue itself. The driver's
+policy fallback would only work on a machine where provisioning had installed a
+non-empty platform policy, which this machine never did.
+
+Note: offline recomputation of the TPM's `PolicySecret` digest did **not**
+reproduce `8ba293e2…`/`a97509ad…` for any simple `H(0||CC||Name||policyRef)`
+variant tried; the TPM is authoritative and no derived digest was used to
+authorize anything. `PolicyNV` (the third link in the driver chain) could not be
+constructed — the NV index has `AUTHREAD` but no `POLICYREAD`, and raw attempts
+returned `SIZE`/`HANDLE` errors. None of this changes the conclusion, because an
+empty platform authPolicy blocks the policy route outright.
+
+**Bottom line: the policy route is closed on this hardware.** Recovering the
+PLATFORM authValue would require physical/firmware access (SPI flash dump,
+debug probe, or the AMI SMM variable store) that is not available here. No
+further live TPM probing is warranted without a genuinely new artifact.
 
 ### 9.15 FV2_main.bin decompilation (2026-11-20)
 
