@@ -1397,6 +1397,13 @@ vendor setup command; the only path is the unknown authValue itself. The driver'
 policy fallback would only work on a machine where provisioning had installed a
 non-empty platform policy, which this machine never did.
 
+The reference implementation makes this unambiguous: `CheckPolicyAuthSession()`
+returns `TPM_RC_POLICY_FAIL` (not `AUTH_UNAVAILABLE`) when a policy session's
+`policyDigest` differs from the entity's `authPolicy`. Our `AUTH_UNAVAILABLE`
+therefore arises *before* any digest comparison — the entity has no `authPolicy`
+to compare against. That is independent confirmation that PLATFORM's
+`authPolicy` is empty, not merely that we guessed the wrong digest.
+
 A follow-up `strace` pass on `tpm2-tools` (2026-11-23) confirmed the raw wire
 work and refined two details:
 
@@ -1405,9 +1412,17 @@ work and refined two details:
   `PolicyCommandCode` extension is reproducible offline:
   `H(prevDigest || 0000016c || commandCode)` — from a fresh session this gives
   `be698d8b…`, and extending `8ba293e2…` with `0x129` gives `a97509ad…`.
-  The `PolicySecret` extension `H(0 || 00000151 || …)` did not match any of the
-  tested `Name`/`policyRef` encodings, so its exact byte layout remains open,
-  but this does not affect authorization (the TPM reports the digest).
+* **`PolicySecret` digest layout solved (2026-11-23).** The TCG reference
+  implementation's `PolicyContextUpdate()` (`Policy_spt.c`) splits the spec's
+  single `H(policyDigest || CC || Name || policyRef)` into a **two-stage hash
+  with no TPM2B length prefixes**:
+  `first = H(policyDigest || 00000151 || Name(authHandle))`,
+  `digest = H(first || policyRef)`. Verified with `tpm2_policysecret -q`: with
+  an empty `policyRef` this gives `8ba293e2…` and with `-q aabbccdd` it gives
+  `bed3db11…`, both matching live `tpm2_getpolicydigest` exactly. The full
+  driver chain is now reproducible offline in `tpm_re/policy.py` (5 tests).
+  This confirms the earlier `Name`/`policyRef` encoding attempts failed only
+  because they used a single-stage hash and/or TPM2B length prefixes.
 * `tpm2_changeauth -S` is documented as an *auxiliary* session for
   encryption/auditing, **not** the authorizing session. Running the full policy
   chain through the tools still returned `0x9A2 BAD_AUTH` from `changeauth`,

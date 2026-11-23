@@ -6,12 +6,19 @@ The toolkit was written while reverse engineering the discrete TPM in a Lenovo T
 
 ## Current status (2026-11-20)
 
-* Offline suite: **97 tests pass** (`python3 -m pytest tests/ -q`).
+* Offline suite: **115 tests pass** (`python3 -m pytest tests/ -q`).
 * NV `0x01802006` auth is **statically derived and live-confirmed**:
   `SHA256(UTF-16LE("NovemberRain") + 0000)` = `4a2a5d84…df`. See
   [`tpm_re/nvauth.py`](tpm_re/nvauth.py). `NV_Read` with this auth returns 16
   bytes; an empty password returns `BAD_AUTH`. The TPM was temporarily
   wedged by a `0x20000202` probe but the hardware was later restored.
+* FUM policy digests are **reproducible offline** with
+  [`tpm_re/policy.py`](tpm_re/policy.py): `PolicySecret` is a two-stage hash
+  `H(H(prev || 00000151 || Name) || policyRef)` (no TPM2B length prefixes),
+  followed by `PolicyCommandCode` `H(prev || 0000016c || cc)`. Both match live
+  `tpm2_getpolicydigest` values. This does **not** open an authorization path:
+  PLATFORM has a non-empty authValue but an empty authPolicy, so policy
+  sessions return `AUTH_UNAVAILABLE` (see knowledge §9.15).
 * The BIOS image contains **AMD fTPM**, not NPCT75x firmware. The AMI FMP
   driver is a version-reporting/capsule-dispatch shim; its `SetImage` path and
   the `AMI ` capsule layout are decoded in section 7.1 of the knowledge file.
